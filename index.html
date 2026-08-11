@@ -675,7 +675,10 @@
       </select>
       <button id="loadBtn">Load</button>
       <button id="backtestBtn" class="secondary-btn" disabled>Backtest</button>
+      <button id="batchBtBtn" class="secondary-btn">Batch BT</button>
       <button id="alertsBtn" class="secondary-btn">🔔 Alerts: Off</button>
+      <button id="alertSettingsBtn" class="secondary-btn" title="Discord webhook & sound settings">⚙</button>
+      <button id="paperBtn" class="secondary-btn">Paper P&amp;L</button>
       <button id="screenerBtn" class="secondary-btn">Screener</button>
       <button id="journalBtn" class="secondary-btn">Journal</button>
       <button id="calcBtn" class="secondary-btn">Calc</button>
@@ -787,9 +790,78 @@
       <p class="modal-sub">Simulates every historical order-block retest in the loaded 500-candle window: entry at the block edge, fixed 2R target, stop beyond the block. Past structure, not a guarantee of future setups.</p>
       <div class="bt-stats" id="btStats"></div>
       <div id="btChart" class="bt-chart"></div>
-      <div class="bt-table-wrap">
+      <div class="insight-label" style="margin-top:16px; margin-bottom:8px;">Win rate by session (entry candle's UTC hour)</div>
+      <div class="bt-stats" id="btSessionStats"></div>
+      <div class="bt-table-wrap" style="margin-top:14px;">
         <table class="bt-table" id="btTable"></table>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="batchBtOverlay">
+    <div class="modal-panel" style="max-width:760px;">
+      <div class="modal-head">
+        <h2>Batch Backtest &mdash; <span>watchlist comparison</span></h2>
+        <button class="close-btn" id="closeBatchBt">✕</button>
+      </div>
+      <p class="modal-sub">Runs the same order-block-retest backtest across every pair in your watchlist on the current timeframe, so you can see which pairs this structure logic actually works on.</p>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+        <button id="runBatchBtBtn" class="secondary-btn">Run batch backtest</button>
+        <button id="monteCarloBtn" class="secondary-btn">Monte Carlo (current symbol)</button>
+        <span id="batchBtStatus" style="font-size:11px; color:var(--text-dim);">Idle</span>
+      </div>
+      <div class="bt-stats" id="batchBtSummary"></div>
+      <div class="bt-table-wrap" style="max-height:340px; margin-top:14px;">
+        <table class="bt-table" id="batchBtTable"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="monteCarloOverlay">
+    <div class="modal-panel" style="max-width:560px;">
+      <div class="modal-head">
+        <h2>Monte Carlo &mdash; <span id="mcSymbolLabel">&mdash;</span></h2>
+        <button class="close-btn" id="closeMonteCarlo">✕</button>
+      </div>
+      <p class="modal-sub">Reshuffles the current symbol's backtest trade sequence 500 times to see how much the equity curve's shape depends on trade order versus the underlying win rate. Same trades every run — different draw order.</p>
+      <div class="bt-stats" id="mcStats"></div>
+      <div id="mcChart" class="bt-chart"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="alertSettingsOverlay">
+    <div class="modal-panel" style="max-width:460px;">
+      <div class="modal-head">
+        <h2>Alert Settings</h2>
+        <button class="close-btn" id="closeAlertSettings">✕</button>
+      </div>
+      <div class="calc-grid" style="grid-template-columns:1fr;">
+        <label>Discord webhook URL (optional)
+          <input type="text" id="discordWebhookInput" placeholder="https://discord.com/api/webhooks/..." />
+        </label>
+      </div>
+      <p class="modal-sub" style="margin-top:8px;">If set, new signals and price alerts also post to this Discord channel. Stored only in this browser — never sent anywhere except directly to your webhook URL.</p>
+      <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" id="soundNewSignal" checked /> Sound on new signal</label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" id="soundPriceAlert" checked /> Sound on price alert hit</label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" id="discordEnabled" checked /> Send to Discord when webhook is set</label>
+      </div>
+      <button id="saveAlertSettingsBtn" class="secondary-btn" style="margin-top:16px;">Save</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="paperOverlay">
+    <div class="modal-panel" style="max-width:780px;">
+      <div class="modal-head">
+        <h2>Paper Trading</h2>
+        <button class="close-btn" id="closePaper">✕</button>
+      </div>
+      <p class="modal-sub">While Alerts are on, every new signal is auto-logged here as a hypothetical trade and checked against later candles for a 2R target / stop hit. Purely simulated — no real orders are placed.</p>
+      <div class="bt-stats" id="paperStats"></div>
+      <div class="bt-table-wrap" style="max-height:320px; margin-top:14px;">
+        <table class="bt-table" id="paperTable"></table>
+      </div>
+      <button id="clearPaperBtn" class="secondary-btn" style="margin-top:12px;">Clear all</button>
     </div>
   </div>
 
@@ -881,7 +953,7 @@
         <li>Whale trade alerts — needs a persistent WebSocket stream, not a REST poll</li>
         <li>Order book depth heatmap, BTC correlation overlay, correlation checker — extra fetches + charting work</li>
         <li>Manual drawing tools, replay mode, multi-chart split view, custom theme editor — each a sizable UI build on its own</li>
-        <li>Discord webhook alerts, paper trading simulator, Monte Carlo backtest, strategy preset comparison, batch multi-pair backtest, session win-rate heatmap</li>
+        <li>Strategy preset comparison (different confluence weight combos)</li>
         <li>PWA install support, continuous background auto-scan screener, multi-exchange (Bybit/OKX) toggle</li>
         <li>Inducement / Turtle Soup / Judas Swing / Power of Three / PD Array ranking — refinements on top of today's liquidity-sweep logic</li>
       </ul>
@@ -959,6 +1031,8 @@
   let watchlist = loadJSON('ledger_watchlist', DEFAULT_WATCHLIST);
   let priceAlerts = loadJSON('ledger_price_alerts', []); // [{id, symbol, price, hit:false}]
   let journal = loadJSON('ledger_journal', []); // [{id, ts, symbol, dir, entry, stop, target, basis, status}]
+  let paperTrades = loadJSON('ledger_paper_trades', []); // [{id, ts, symbol, dir, entry, stop, target, entryIndexTime, status}]
+  let alertSettings = loadJSON('ledger_alert_settings', { discordWebhook:'', soundNewSignal:true, soundPriceAlert:true, discordEnabled:true });
 
   function clearOverlays(){
     obSeries.forEach(s => chart.removeSeries(s));
@@ -1572,13 +1646,23 @@
     }catch(e){ /* audio not available, fail silently */ }
   }
 
+  function postToDiscord(content){
+    if(!alertSettings.discordEnabled || !alertSettings.discordWebhook) return;
+    fetch(alertSettings.discordWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    }).catch(e => { /* webhook unreachable or blocked — fail silently */ });
+  }
+
   function notifyNewSignal(s, symbol){
     const title = `${symbol} · ${s.dir === 'up' ? 'LONG' : 'SHORT'} setup`;
     const body = `${s.basis} — entry ${s.entry.toFixed(4)}, R:R ≈ ${s.rr}`;
     if('Notification' in window && Notification.permission === 'granted'){
       try{ new Notification(title, { body, tag: title }); }catch(e){}
     }
-    playAlertBeep();
+    if(alertSettings.soundNewSignal) playAlertBeep();
+    postToDiscord(`**${title}**\n${body}`);
   }
 
   // ---------- rendering ----------
@@ -1954,11 +2038,17 @@
           if('Notification' in window && Notification.permission === 'granted'){
             try{ new Notification(`${symbol} price alert`, { body: `Crossed ${a.price}` }); }catch(e){}
           }
-          playAlertBeep();
+          if(alertSettings.soundPriceAlert) playAlertBeep();
+          postToDiscord(`**${symbol} price alert** — crossed ${a.price}`);
         }
       });
       saveJSON('ledger_price_alerts', priceAlerts);
       renderAlertChips();
+
+      // ---------- paper trading: log new signals as hypothetical trades, check open ones ----------
+      if(alertsEnabled){
+        checkOpenPaperTrades(symbol, candles);
+      }
 
       const prev = candles[candles.length-2];
       const chg = ((last.close - prev.close) / prev.close) * 100;
@@ -1977,7 +2067,10 @@
         if(knownSignalKeys.size > 0){
           signals.forEach(s => {
             const key = `${symbol}_${s.dir}_${s.blockIndex}_${s.eventIndex}`;
-            if(!knownSignalKeys.has(key)) notifyNewSignal(s, symbol);
+            if(!knownSignalKeys.has(key)){
+              notifyNewSignal(s, symbol);
+              logPaperTrade(s, symbol);
+            }
           });
         }
         knownSignalKeys = currentKeys;
@@ -2053,11 +2146,35 @@
     `;
   }
 
+  function computeSessionBreakdown(trades, candles){
+    const sessions = { Asian:{wins:0,losses:0}, London:{wins:0,losses:0}, 'New York':{wins:0,losses:0}, Other:{wins:0,losses:0} };
+    trades.forEach(t => {
+      const hour = new Date(candles[t.entryIndex].time * 1000).getUTCHours();
+      let session = 'Other';
+      if(hour >= 0 && hour < 4) session = 'Asian';
+      else if(hour >= 7 && hour < 10) session = 'London';
+      else if(hour >= 12 && hour < 15) session = 'New York';
+      if(t.outcome === 'win') sessions[session].wins++; else sessions[session].losses++;
+    });
+    return sessions;
+  }
+
+  function renderSessionBreakdown(sessions){
+    const el = document.getElementById('btSessionStats');
+    el.innerHTML = Object.keys(sessions).map(name => {
+      const s = sessions[name];
+      const total = s.wins + s.losses;
+      const rate = total ? (s.wins / total * 100) : null;
+      return `<div class="bt-stat"><div class="lbl">${name}</div><div class="val ${rate === null ? '' : (rate >= 50 ? 'up' : 'down')}">${rate === null ? 'n/a' : rate.toFixed(0) + '%'}</div><div style="font-size:9px; color:var(--text-dim); margin-top:2px;">${total} trades</div></div>`;
+    }).join('');
+  }
+
   function openBacktest(){
     if(!lastRun) return;
     const result = runBacktest(lastRun.candles, lastRun.blocks);
     document.getElementById('btSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval}`;
     renderBacktestStats(result);
+    renderSessionBreakdown(computeSessionBreakdown(result.trades, lastRun.candles));
     document.getElementById('backtestOverlay').classList.add('open');
     // chart needs a visible, sized container before init — render on next frame
     requestAnimationFrame(() => {
@@ -2120,6 +2237,86 @@
     const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
     return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null, rejectionBlocks);
   }
+
+  // shares the structure/order-block pipeline with analyzeSymbolQuick but stops before
+  // signal scoring — batch backtest just needs the blocks to simulate against
+  function computeBlocksOnly(candles){
+    const swings = findSwings(candles);
+    const events = buildStructure(candles, swings);
+    const avgVol = computeAvgVolume(candles);
+    tagEventVolume(candles, events, avgVol);
+    const blocks = findOrderBlocks(candles, events);
+    const breakers = findBreakerBlocks(candles, blocks);
+    const mitigationBlocks = findMitigationBlocks(candles, blocks, breakers);
+    return blocks.concat(breakers, mitigationBlocks);
+  }
+
+  async function runBatchBacktest(){
+    const interval = document.getElementById('intervalSelect').value;
+    const statusEl = document.getElementById('batchBtStatus');
+    const runBtn = document.getElementById('runBatchBtBtn');
+    runBtn.disabled = true; runBtn.textContent = 'Running…';
+    document.getElementById('batchBtTable').innerHTML = '';
+    document.getElementById('batchBtSummary').innerHTML = '';
+
+    const rows = [];
+    let combinedTrades = 0, combinedWins = 0, combinedR = 0;
+
+    for(let i=0; i<watchlist.length; i++){
+      const sym = watchlist[i];
+      statusEl.textContent = `Backtesting ${sym}… (${i+1}/${watchlist.length})`;
+      try{
+        const candles = await fetchKlines(sym, interval, 500);
+        const blocks = computeBlocksOnly(candles);
+        const result = runBacktest(candles, blocks);
+        rows.push({ symbol: sym, ...result });
+        combinedTrades += result.trades.length;
+        combinedWins += result.wins;
+        combinedR += result.totalR;
+      }catch(e){ /* skip on failure */ }
+    }
+
+    rows.sort((a,b) => b.totalR - a.totalR);
+    statusEl.textContent = `Backtested ${watchlist.length} pairs on ${interval}`;
+
+    const combinedWinRate = combinedTrades ? (combinedWins / combinedTrades * 100) : 0;
+    document.getElementById('batchBtSummary').innerHTML = `
+      <div class="bt-stat"><div class="lbl">Pairs tested</div><div class="val">${rows.length}</div></div>
+      <div class="bt-stat"><div class="lbl">Total trades</div><div class="val">${combinedTrades}</div></div>
+      <div class="bt-stat"><div class="lbl">Combined win rate</div><div class="val ${combinedWinRate>=50?'up':'down'}">${combinedWinRate.toFixed(1)}%</div></div>
+      <div class="bt-stat"><div class="lbl">Combined net R</div><div class="val ${combinedR>=0?'up':'down'}">${combinedR>=0?'+':''}${combinedR.toFixed(1)}R</div></div>
+    `;
+
+    const table = document.getElementById('batchBtTable');
+    if(rows.length === 0){
+      table.innerHTML = '<tbody><tr><td style="padding:16px;color:var(--text-dim);">No results.</td></tr></tbody>';
+    } else {
+      const bodyRows = rows.map(r => `
+        <tr>
+          <td>${r.symbol.replace('USDT','')}/USDT</td>
+          <td>${r.trades.length}</td>
+          <td class="${r.winRate>=50?'win':'loss'}">${r.winRate.toFixed(1)}%</td>
+          <td class="${r.totalR>=0?'win':'loss'}">${r.totalR>=0?'+':''}${r.totalR.toFixed(1)}R</td>
+          <td>${r.avgR.toFixed(2)}R</td>
+        </tr>
+      `).join('');
+      table.innerHTML = `
+        <thead><tr><th>Pair</th><th>Trades</th><th>Win rate</th><th>Net R</th><th>Avg R</th></tr></thead>
+        <tbody>${bodyRows}</tbody>
+      `;
+    }
+    runBtn.disabled = false; runBtn.textContent = 'Run batch backtest';
+  }
+
+  function openBatchBt(){ document.getElementById('batchBtOverlay').classList.add('open'); }
+  function closeBatchBt(){ document.getElementById('batchBtOverlay').classList.remove('open'); }
+
+  document.getElementById('batchBtBtn').addEventListener('click', openBatchBt);
+  document.getElementById('closeBatchBt').addEventListener('click', closeBatchBt);
+  document.getElementById('batchBtOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'batchBtOverlay') closeBatchBt();
+  });
+  document.getElementById('runBatchBtBtn').addEventListener('click', runBatchBacktest);
 
   let lastScreenerResults = [];
 
@@ -2358,6 +2555,193 @@
     a.href = url; a.download = 'ledger_journal.csv';
     a.click();
     URL.revokeObjectURL(url);
+  });
+
+  // ---------- paper trading simulator ----------
+  function logPaperTrade(s, symbol){
+    // avoid duplicate logging for the same block/event if run() fires again before it resolves
+    const exists = paperTrades.some(t => t.status === 'open' && t.symbol === symbol && t.entry === s.entry && t.dir === s.dir);
+    if(exists) return;
+    paperTrades.push({
+      id: Date.now() + '_' + Math.random().toString(36).slice(2,7),
+      ts: Date.now(), symbol, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target,
+      basis: s.basis, status: 'open'
+    });
+    saveJSON('ledger_paper_trades', paperTrades);
+  }
+
+  // walks candles since a trade was logged and closes it out the moment price
+  // touches its stop or target — same simulated-fill logic as the backtest engine
+  function checkOpenPaperTrades(symbol, candles){
+    let changed = false;
+    paperTrades.forEach(t => {
+      if(t.status !== 'open' || t.symbol !== symbol) return;
+      const startIdx = candles.findIndex(c => c.time * 1000 >= t.ts);
+      const from = startIdx >= 0 ? startIdx : 0;
+      for(let k = from; k < candles.length; k++){
+        const c = candles[k];
+        if(t.dir === 'up'){
+          if(c.low <= t.stop){ t.status = 'loss'; changed = true; break; }
+          if(c.high >= t.target){ t.status = 'win'; changed = true; break; }
+        } else {
+          if(c.high >= t.stop){ t.status = 'loss'; changed = true; break; }
+          if(c.low <= t.target){ t.status = 'win'; changed = true; break; }
+        }
+      }
+    });
+    if(changed) saveJSON('ledger_paper_trades', paperTrades);
+  }
+
+  function renderPaper(){
+    const wins = paperTrades.filter(t => t.status === 'win').length;
+    const losses = paperTrades.filter(t => t.status === 'loss').length;
+    const open = paperTrades.filter(t => t.status === 'open').length;
+    const closed = wins + losses;
+    const winRate = closed ? (wins / closed * 100) : 0;
+    const totalR = wins * 2 - losses;
+    document.getElementById('paperStats').innerHTML = `
+      <div class="bt-stat"><div class="lbl">Logged</div><div class="val">${paperTrades.length}</div></div>
+      <div class="bt-stat"><div class="lbl">Open</div><div class="val">${open}</div></div>
+      <div class="bt-stat"><div class="lbl">Win rate</div><div class="val ${winRate>=50?'up':'down'}">${winRate.toFixed(1)}%</div></div>
+      <div class="bt-stat"><div class="lbl">Wins / Losses</div><div class="val">${wins} / ${losses}</div></div>
+      <div class="bt-stat"><div class="lbl">Net R</div><div class="val ${totalR>=0?'up':'down'}">${totalR>=0?'+':''}${totalR}R</div></div>
+    `;
+    const table = document.getElementById('paperTable');
+    if(paperTrades.length === 0){
+      table.innerHTML = '<tbody><tr><td style="padding:16px;color:var(--text-dim);">No paper trades yet — turn on Alerts to auto-log new signals here.</td></tr></tbody>';
+      return;
+    }
+    const rows = paperTrades.slice().reverse().map(t => `
+      <tr>
+        <td>${new Date(t.ts).toLocaleString()}</td>
+        <td>${t.symbol}</td>
+        <td class="${t.dir==='up'?'win':'loss'}">${t.dir==='up'?'LONG':'SHORT'}</td>
+        <td>${t.entry.toFixed(4)}</td>
+        <td>${t.status === 'open' ? '<span style="color:var(--text-dim);">Open</span>' : (t.status==='win' ? '<span class="win">WIN</span>' : '<span class="loss">LOSS</span>')}</td>
+      </tr>
+    `).join('');
+    table.innerHTML = `<thead><tr><th>Logged</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Status</th></tr></thead><tbody>${rows}</tbody>`;
+  }
+
+  function openPaper(){ renderPaper(); document.getElementById('paperOverlay').classList.add('open'); }
+  function closePaper(){ document.getElementById('paperOverlay').classList.remove('open'); }
+
+  document.getElementById('paperBtn').addEventListener('click', openPaper);
+  document.getElementById('closePaper').addEventListener('click', closePaper);
+  document.getElementById('paperOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'paperOverlay') closePaper();
+  });
+  document.getElementById('clearPaperBtn').addEventListener('click', () => {
+    paperTrades = [];
+    saveJSON('ledger_paper_trades', paperTrades);
+    renderPaper();
+  });
+
+  // ---------- alert settings ----------
+  function openAlertSettings(){
+    document.getElementById('discordWebhookInput').value = alertSettings.discordWebhook || '';
+    document.getElementById('soundNewSignal').checked = alertSettings.soundNewSignal;
+    document.getElementById('soundPriceAlert').checked = alertSettings.soundPriceAlert;
+    document.getElementById('discordEnabled').checked = alertSettings.discordEnabled;
+    document.getElementById('alertSettingsOverlay').classList.add('open');
+  }
+  function closeAlertSettings(){ document.getElementById('alertSettingsOverlay').classList.remove('open'); }
+
+  document.getElementById('alertSettingsBtn').addEventListener('click', openAlertSettings);
+  document.getElementById('closeAlertSettings').addEventListener('click', closeAlertSettings);
+  document.getElementById('alertSettingsOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'alertSettingsOverlay') closeAlertSettings();
+  });
+  document.getElementById('saveAlertSettingsBtn').addEventListener('click', () => {
+    alertSettings = {
+      discordWebhook: document.getElementById('discordWebhookInput').value.trim(),
+      soundNewSignal: document.getElementById('soundNewSignal').checked,
+      soundPriceAlert: document.getElementById('soundPriceAlert').checked,
+      discordEnabled: document.getElementById('discordEnabled').checked
+    };
+    saveJSON('ledger_alert_settings', alertSettings);
+    closeAlertSettings();
+  });
+
+  // ---------- Monte Carlo simulation on the backtest equity curve ----------
+  let mcChartInstance = null;
+
+  function runMonteCarlo(trades, iterations){
+    iterations = iterations || 500;
+    const finals = [];
+    const rValues = trades.map(t => t.r);
+    for(let iter=0; iter<iterations; iter++){
+      const shuffled = rValues.slice();
+      for(let i=shuffled.length-1; i>0; i--){
+        const j = Math.floor(Math.random() * (i+1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      let cum = 0;
+      shuffled.forEach(r => cum += r);
+      finals.push(cum);
+    }
+    finals.sort((a,b) => a-b);
+    const pct = p => finals[Math.floor(p * (finals.length-1))];
+    return { finals, p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), worst: finals[0], best: finals[finals.length-1] };
+  }
+
+  function openMonteCarlo(){
+    if(!lastRun){ return; }
+    const result = runBacktest(lastRun.candles, lastRun.blocks);
+    if(result.trades.length < 5){
+      document.getElementById('mcStats').innerHTML = '<div class="bt-stat"><div class="lbl">Result</div><div class="val" style="font-size:12px; color:var(--text-dim);">Need at least 5 backtest trades to run a meaningful simulation.</div></div>';
+      document.getElementById('mcChart').innerHTML = '';
+      document.getElementById('mcSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval}`;
+      document.getElementById('monteCarloOverlay').classList.add('open');
+      return;
+    }
+    const mc = runMonteCarlo(result.trades, 500);
+    document.getElementById('mcSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval} · ${result.trades.length} trades reshuffled 500x`;
+    document.getElementById('mcStats').innerHTML = `
+      <div class="bt-stat"><div class="lbl">Worst run</div><div class="val down">${mc.worst.toFixed(1)}R</div></div>
+      <div class="bt-stat"><div class="lbl">5th pct</div><div class="val down">${mc.p5.toFixed(1)}R</div></div>
+      <div class="bt-stat"><div class="lbl">Median</div><div class="val">${mc.p50.toFixed(1)}R</div></div>
+      <div class="bt-stat"><div class="lbl">95th pct</div><div class="val up">${mc.p95.toFixed(1)}R</div></div>
+      <div class="bt-stat"><div class="lbl">Best run</div><div class="val up">${mc.best.toFixed(1)}R</div></div>
+    `;
+    document.getElementById('monteCarloOverlay').classList.add('open');
+    requestAnimationFrame(() => renderMonteCarloChart(mc.finals));
+  }
+
+  function renderMonteCarloChart(finals){
+    if(mcChartInstance){ mcChartInstance.remove(); mcChartInstance = null; }
+    const container = document.getElementById('mcChart');
+    container.innerHTML = '';
+    mcChartInstance = LightweightCharts.createChart(container, {
+      layout:{ background:{ color:'#12151B' }, textColor:'#8A8F9B', fontFamily:"'JetBrains Mono', monospace" },
+      grid:{ vertLines:{ color:'#1E232B' }, horzLines:{ color:'#1E232B' } },
+      rightPriceScale:{ borderColor:'#1E232B' },
+      timeScale:{ visible:false },
+      autoSize:true
+    });
+    // histogram of the 500 simulated final-R outcomes, bucketed into 20 bins
+    const min = Math.min(...finals), max = Math.max(...finals);
+    const binCount = 20;
+    const binSize = (max - min) / binCount || 1;
+    const bins = new Array(binCount).fill(0);
+    finals.forEach(v => {
+      const idx = Math.min(binCount-1, Math.floor((v - min) / binSize));
+      bins[idx]++;
+    });
+    const series = mcChartInstance.addHistogramSeries({ priceFormat:{ type:'volume' }, color: COLORS.structure });
+    series.setData(bins.map((count, i) => ({ time: i, value: count, color: (min + i*binSize) >= 0 ? 'rgba(240,180,41,0.7)' : 'rgba(124,92,252,0.7)' })));
+  }
+
+  document.getElementById('monteCarloBtn').addEventListener('click', openMonteCarlo);
+  document.getElementById('closeMonteCarlo').addEventListener('click', () => {
+    document.getElementById('monteCarloOverlay').classList.remove('open');
+    if(mcChartInstance){ mcChartInstance.remove(); mcChartInstance = null; }
+  });
+  document.getElementById('monteCarloOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'monteCarloOverlay'){
+      document.getElementById('monteCarloOverlay').classList.remove('open');
+      if(mcChartInstance){ mcChartInstance.remove(); mcChartInstance = null; }
+    }
   });
 
   // ---------- position size calculator ----------
