@@ -280,6 +280,46 @@
     min-width:0;
     border-right:1px solid var(--line);
   }
+  .chart-row{
+    display:flex;
+    flex:1;
+    min-height:0;
+  }
+  .draw-toolbar{
+    width:42px;
+    flex-shrink:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    padding:10px 0;
+    border-right:1px solid var(--line);
+    background:var(--panel);
+  }
+  .tool-btn{
+    width:30px; height:30px;
+    display:flex; align-items:center; justify-content:center;
+    background:transparent;
+    color:var(--text-dim);
+    border:1px solid transparent;
+    border-radius:4px;
+    font-size:14px;
+    cursor:pointer;
+    padding:0;
+  }
+  .tool-btn:hover{ background:var(--panel-raised); color:var(--text); }
+  .tool-btn.active{
+    background:rgba(53,198,198,0.14);
+    border-color:var(--structure-dim);
+    color:var(--structure);
+  }
+  .tool-sep{ width:22px; height:1px; background:var(--line); margin:4px 0; }
+  .chart-body{
+    flex:1;
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+  }
   #chart{
     flex:1;
     min-height:420px;
@@ -299,6 +339,14 @@
     pointer-events:none;
     overflow:hidden;
     z-index:2;
+  }
+  .draw-overlay{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    pointer-events:none;
+    z-index:3;
   }
   .kz-band{
     position:absolute;
@@ -354,6 +402,21 @@
     font-size:11px;
     color:var(--text-dim);
     margin-top:4px;
+  }
+  .preset-row{ display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+  .preset-btn{
+    background:var(--panel-raised);
+    color:var(--text-dim);
+    border:1px solid var(--line);
+    font-size:10px;
+    padding:5px 9px;
+    border-radius:12px;
+    cursor:pointer;
+  }
+  .preset-btn.active{
+    color:var(--structure);
+    border-color:var(--structure-dim);
+    background:rgba(53,198,198,0.1);
   }
   .signal-feed{
     overflow-y:auto;
@@ -668,10 +731,21 @@
       </select>
       <input type="text" id="customSymbol" placeholder="custom e.g. AVAXUSDT" size="16" />
       <select id="intervalSelect">
+        <option value="1m">1m</option>
+        <option value="3m">3m</option>
+        <option value="5m">5m</option>
         <option value="15m">15m</option>
+        <option value="30m">30m</option>
         <option value="1h" selected>1h</option>
+        <option value="2h">2h</option>
         <option value="4h">4h</option>
+        <option value="6h">6h</option>
+        <option value="8h">8h</option>
+        <option value="12h">12h</option>
         <option value="1d">1d</option>
+        <option value="3d">3d</option>
+        <option value="1w">1w</option>
+        <option value="1M">1M</option>
       </select>
       <button id="loadBtn">Load</button>
       <button id="backtestBtn" class="secondary-btn" disabled>Backtest</button>
@@ -717,6 +791,18 @@
       <div class="insight-label">Long/Short (top traders)</div>
       <div id="lsRatioBadge" class="insight-val">&mdash;</div>
     </div>
+    <div class="insight-block">
+      <div class="insight-label">Order book (bid/ask)</div>
+      <div id="obImbalanceBadge" class="insight-val">&mdash;</div>
+    </div>
+    <div class="insight-block">
+      <button id="correlationBtn" class="secondary-btn">Correlation</button>
+    </div>
+    <div class="insight-block">
+      <label style="display:flex; align-items:center; gap:6px; font-size:10px; color:var(--text-dim); cursor:pointer;">
+        <input type="checkbox" id="btcOverlayToggle" /> BTC overlay
+      </label>
+    </div>
     <div class="insight-block grow">
       <div class="insight-label">Price alerts</div>
       <div class="alert-row">
@@ -742,33 +828,53 @@
 
   <main>
     <div class="chart-col">
-      <div class="chart-wrap">
-        <div id="chart"></div>
-        <div class="kz-overlay" id="kzOverlay"></div>
-      </div>
-      <div class="legend">
-        <span><i class="swatch" style="background:#3A4250"></i> Structure zigzag (swing pivots)</span>
-        <span><i class="swatch" style="background:#E8E6DF"></i> External/major structure</span>
-        <span><i class="swatch" style="background:#D48FD8"></i> Fib OTE zone (61.8&ndash;79%)</span>
-        <span><i class="swatch" style="background:var(--long)"></i> Bullish order block</span>
-        <span><i class="swatch" style="background:var(--short)"></i> Bearish order block</span>
-        <span><i class="swatch" style="background:var(--structure)"></i> BOS / CHoCH line</span>
-        <span><i class="swatch" style="background:var(--danger); opacity:0.6"></i> Fair value gap</span>
-        <span><i class="swatch" style="background:#C9A227"></i> Liquidity pool (solid = resting, dotted = swept)</span>
-        <span><i class="swatch" style="background:#C9A227; opacity:0.6"></i> Breaker block (dashed, flipped polarity)</span>
-        <span>Volume pane below chart &middot; "Vol ✓" = break on ≥1.4x avg volume</span>
-      </div>
-      <div class="legend" id="killZoneLegend">
-        <span><i class="swatch" style="background:rgba(124,92,252,0.35)"></i> Asian kill zone (00&ndash;04 UTC)</span>
-        <span><i class="swatch" style="background:rgba(53,198,198,0.35)"></i> London kill zone (07&ndash;10 UTC)</span>
-        <span><i class="swatch" style="background:rgba(240,180,41,0.35)"></i> New York kill zone (12&ndash;15 UTC)</span>
-        <span class="session-badge" id="sessionBadge">&mdash;</span>
+      <div class="chart-row">
+        <div class="draw-toolbar" id="drawToolbar">
+          <button class="tool-btn active" data-tool="cursor" title="Cursor">↖</button>
+          <button class="tool-btn" data-tool="trendline" title="Trend line">╱</button>
+          <button class="tool-btn" data-tool="hline" title="Horizontal line">—</button>
+          <button class="tool-btn" data-tool="rectangle" title="Rectangle">▭</button>
+          <button class="tool-btn" data-tool="text" title="Text note">T</button>
+          <div class="tool-sep"></div>
+          <button class="tool-btn" id="clearDrawingsBtn" title="Clear all drawings on this chart">🗑</button>
+        </div>
+        <div class="chart-body">
+          <div class="chart-wrap">
+            <div id="chart"></div>
+            <div class="kz-overlay" id="kzOverlay"></div>
+            <svg class="draw-overlay" id="drawOverlay"></svg>
+          </div>
+          <div class="legend">
+            <span><i class="swatch" style="background:#3A4250"></i> Structure zigzag (swing pivots)</span>
+            <span><i class="swatch" style="background:#E8E6DF"></i> External/major structure</span>
+            <span><i class="swatch" style="background:#D48FD8"></i> Fib OTE zone (61.8&ndash;79%)</span>
+            <span><i class="swatch" style="background:var(--long)"></i> Bullish order block</span>
+            <span><i class="swatch" style="background:var(--short)"></i> Bearish order block</span>
+            <span><i class="swatch" style="background:var(--structure)"></i> BOS / CHoCH line</span>
+            <span><i class="swatch" style="background:var(--danger); opacity:0.6"></i> Fair value gap</span>
+            <span><i class="swatch" style="background:#C9A227"></i> Liquidity pool (solid = resting, dotted = swept)</span>
+            <span><i class="swatch" style="background:#F7931A"></i> BTC overlay (% change, when enabled)</span>
+            <span><i class="swatch" style="background:#C9A227; opacity:0.6"></i> Breaker block (dashed, flipped polarity)</span>
+            <span>Volume pane below chart &middot; "Vol ✓" = break on ≥1.4x avg volume</span>
+          </div>
+          <div class="legend" id="killZoneLegend">
+            <span><i class="swatch" style="background:rgba(124,92,252,0.35)"></i> Asian kill zone (00&ndash;04 UTC)</span>
+            <span><i class="swatch" style="background:rgba(53,198,198,0.35)"></i> London kill zone (07&ndash;10 UTC)</span>
+            <span><i class="swatch" style="background:rgba(240,180,41,0.35)"></i> New York kill zone (12&ndash;15 UTC)</span>
+            <span class="session-badge" id="sessionBadge">&mdash;</span>
+          </div>
+        </div>
       </div>
     </div>
     <div class="sidebar">
       <div class="sidebar-head">
         <h2>Signal feed</h2>
         <p>Generated from structure breaks retesting unmitigated order blocks &amp; FVGs.</p>
+        <div class="preset-row">
+          <button class="preset-btn active" id="presetAll" data-min="0">All</button>
+          <button class="preset-btn" id="presetConservative" data-min="6">Conservative (6+)</button>
+          <button class="preset-btn" id="presetAggressive" data-min="2">Aggressive (2+)</button>
+        </div>
       </div>
       <div class="signal-feed" id="signalFeed">
         <div class="empty-state">No signals yet. Load a pair to scan the last 500 candles for setups.</div>
@@ -829,6 +935,22 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="correlationOverlay">
+    <div class="modal-panel" style="max-width:460px;">
+      <div class="modal-head">
+        <h2>Correlation Checker</h2>
+        <button class="close-btn" id="closeCorrelation">✕</button>
+      </div>
+      <p class="modal-sub">Pearson correlation of daily returns between two pairs over the current timeframe's loaded window — useful before opening two signals at once, since highly correlated pairs aren't real diversification.</p>
+      <div class="calc-grid">
+        <label>Symbol A<input type="text" id="corrSymbolA" placeholder="e.g. BTCUSDT" /></label>
+        <label>Symbol B<input type="text" id="corrSymbolB" placeholder="e.g. ETHUSDT" /></label>
+      </div>
+      <button id="runCorrelationBtn" class="secondary-btn" style="margin-top:14px;">Check correlation</button>
+      <div class="bt-stats" id="corrResult" style="margin-top:16px;"></div>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="alertSettingsOverlay">
     <div class="modal-panel" style="max-width:460px;">
       <div class="modal-head">
@@ -874,6 +996,7 @@
       <p class="modal-sub">Scans your watchlist on the current chart timeframe for the highest-scoring unmitigated order block / breaker setup on each pair. Runs the same structure + liquidity + volume + OTE + major-structure confluence as the main signal feed, minus HTF and funding/OI (skipped here to keep the scan fast).</p>
       <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
         <button id="scanBtn" class="secondary-btn">Scan</button>
+        <button id="autoScanBtn" class="secondary-btn">Auto-scan: Off</button>
         <label style="font-size:10px; color:var(--text-dim);">Min score
           <select id="filterMinScore"><option value="0">Any</option><option value="2">2+</option><option value="4">4+</option><option value="6">6+</option></select>
         </label>
@@ -951,10 +1074,9 @@
         <li>Wyckoff phase detection (subjective pattern, low automatic-detection value)</li>
         <li>Crypto news feed, economic calendar, DXY overlay, exchange net-flow — all need a paid/keyed data API</li>
         <li>Whale trade alerts — needs a persistent WebSocket stream, not a REST poll</li>
-        <li>Order book depth heatmap, BTC correlation overlay, correlation checker — extra fetches + charting work</li>
-        <li>Manual drawing tools, replay mode, multi-chart split view, custom theme editor — each a sizable UI build on its own</li>
+        <li>Full order book depth heatmap (built: simple bid/ask imbalance %), replay mode, multi-chart split view, custom theme editor — each a sizable UI build on its own</li>
         <li>Strategy preset comparison (different confluence weight combos)</li>
-        <li>PWA install support, continuous background auto-scan screener, multi-exchange (Bybit/OKX) toggle</li>
+        <li>PWA install support, multi-exchange (Bybit/OKX) toggle</li>
         <li>Inducement / Turtle Soup / Judas Swing / Power of Three / PD Array ranking — refinements on top of today's liquidity-sweep logic</li>
       </ul>
     </div>
@@ -1001,6 +1123,12 @@
   chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
   let obSeries = [];   // order block price-line boxes (rendered as line series pairs)
+  let btcOverlaySeries = null;
+
+  // ---------- drawing tools state ----------
+  let drawings = loadJSON('ledger_drawings', []); // [{id, type, symbol, interval, p1:{time,price}, p2:{time,price}, text}]
+  let activeTool = 'cursor';
+  let pendingPoint = null;
   let lastRun = null;  // cached { candles, blocks, symbol } from the most recent run(), used by the backtest modal
   let btChartInstance = null;
   let alertsEnabled = false;
@@ -1059,7 +1187,11 @@
   }
 
   // maps the chart's timeframe to the next timeframe up, used for HTF bias confirmation
-  const HTF_MAP = { '15m':'1h', '1h':'4h', '4h':'1d', '1d':'1w' };
+  const HTF_MAP = {
+    '1m':'15m', '3m':'15m', '5m':'30m', '15m':'1h', '30m':'4h',
+    '1h':'4h', '2h':'12h', '4h':'1d', '6h':'1d', '8h':'3d', '12h':'1w',
+    '1d':'1w', '3d':'1M', '1w':'1M'
+  };
 
   // fetches the higher timeframe and returns its current structural trend:
   // 'up' if the most recent BOS/CHoCH broke upward, 'down' if downward, null if no data/events yet
@@ -1141,6 +1273,50 @@
       if(!Array.isArray(data) || !data.length) return null;
       return { longAccount: parseFloat(data[0].longAccount), shortAccount: parseFloat(data[0].shortAccount), ratio: parseFloat(data[0].longShortRatio) };
     }catch(e){ return null; }
+  }
+
+  // order book depth imbalance: sums resting bid volume vs ask volume in the top 50 levels —
+  // a lopsided book leans price toward the thinner side (less resistance to push through)
+  async function fetchOrderBookImbalance(symbol){
+    try{
+      const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=50`);
+      if(!res.ok) return null;
+      const data = await res.json();
+      const bidVol = (data.bids || []).reduce((s, [price, qty]) => s + parseFloat(qty), 0);
+      const askVol = (data.asks || []).reduce((s, [price, qty]) => s + parseFloat(qty), 0);
+      const total = bidVol + askVol;
+      if(total <= 0) return null;
+      return { bidVol, askVol, bidPct: (bidVol / total) * 100 };
+    }catch(e){ return null; }
+  }
+
+  // Pearson correlation coefficient between two candle-close return series, aligned by
+  // shared timestamps — +1 means they move together, -1 means opposite, 0 means unrelated
+  function computeCorrelation(candlesA, candlesB){
+    const mapB = new Map(candlesB.map(c => [c.time, c.close]));
+    const returnsA = [], returnsB = [];
+    let prevA = null, prevB = null;
+    for(const c of candlesA){
+      const closeB = mapB.get(c.time);
+      if(closeB == null) continue;
+      if(prevA != null && prevB != null){
+        returnsA.push((c.close - prevA) / prevA);
+        returnsB.push((closeB - prevB) / prevB);
+      }
+      prevA = c.close; prevB = closeB;
+    }
+    const n = returnsA.length;
+    if(n < 10) return null;
+    const meanA = returnsA.reduce((s,v)=>s+v,0) / n;
+    const meanB = returnsB.reduce((s,v)=>s+v,0) / n;
+    let cov = 0, varA = 0, varB = 0;
+    for(let i=0;i<n;i++){
+      const da = returnsA[i]-meanA, db = returnsB[i]-meanB;
+      cov += da*db; varA += da*da; varB += db*db;
+    }
+    const denom = Math.sqrt(varA*varB);
+    if(denom === 0) return null;
+    return { r: cov/denom, n };
   }
 
   // synthesizes HTF trend + major (external) structure trend + premium/discount position +
@@ -1675,6 +1851,30 @@
     })));
   }
 
+  // BTC correlation overlay: both series normalized to % change from the first shared
+  // candle, plotted on their own scale so you can see whether the pair is tracking BTC
+  // or decoupling, without BTC's price dwarfing the altcoin's candles
+  function renderBtcOverlay(candles, btcCandles){
+    if(btcOverlaySeries){ chart.removeSeries(btcOverlaySeries); btcOverlaySeries = null; }
+    if(!btcCandles || !btcCandles.length) return;
+    const btcMap = new Map(btcCandles.map(c => [c.time, c.close]));
+    let baseBtc = null;
+    const points = [];
+    for(const c of candles){
+      const btcClose = btcMap.get(c.time);
+      if(btcClose == null) continue;
+      if(baseBtc == null) baseBtc = btcClose;
+      points.push({ time: c.time, value: ((btcClose - baseBtc) / baseBtc) * 100 });
+    }
+    if(points.length < 2) return;
+    btcOverlaySeries = chart.addLineSeries({
+      color: '#F7931A', lineWidth: 1, priceScaleId: 'btc-overlay',
+      lastValueVisible: true, priceLineVisible: false, title: 'BTC %'
+    });
+    chart.priceScale('btc-overlay').applyOptions({ scaleMargins: { top: 0.06, bottom: 0.3 } });
+    btcOverlaySeries.setData(points);
+  }
+
   // ---------- kill zones (trading sessions) ----------
   // ICT-style kill zone windows in UTC hours. Approximate by design — traders should nudge
   // these for their own broker/exchange server time, but this covers the standard convention.
@@ -1691,7 +1891,7 @@
     overlay.innerHTML = '';
 
     // kill zones only make sense on intraday charts — one 1d candle spans all three sessions
-    if(interval === '1d' || interval === '1w'){
+    if(interval === '1d' || interval === '3d' || interval === '1w' || interval === '1M'){
       if(legendRow) legendRow.style.opacity = '0.35';
       return;
     }
@@ -1736,12 +1936,126 @@
       : `Now: <b>${String(h).padStart(2,'0')}:00 UTC</b> — outside kill zones`;
   }
 
+  // ---------- drawing tools (TradingView-style left toolbar) ----------
+  function currentSymbolStr(){
+    return (document.getElementById('customSymbol').value.trim() || document.getElementById('symbolSelect').value).toUpperCase();
+  }
+
+  function addDrawing(d){
+    d.id = Date.now() + '_' + Math.random().toString(36).slice(2,7);
+    drawings.push(d);
+    saveJSON('ledger_drawings', drawings);
+    renderDrawings();
+  }
+
+  function renderDrawings(){
+    const svg = document.getElementById('drawOverlay');
+    if(!svg) return;
+    svg.innerHTML = '';
+    const symbol = currentSymbolStr();
+    const interval = document.getElementById('intervalSelect').value;
+    const timeScale = chart.timeScale();
+    const mine = drawings.filter(d => d.symbol === symbol && d.interval === interval);
+
+    mine.forEach(d => {
+      const x1 = timeScale.timeToCoordinate(d.p1.time);
+      const y1 = candleSeries.priceToCoordinate(d.p1.price);
+      if(x1 == null || y1 == null) return;
+
+      if(d.type === 'hline'){
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', 0); line.setAttribute('x2', svg.clientWidth || 2000);
+        line.setAttribute('y1', y1); line.setAttribute('y2', y1);
+        line.setAttribute('stroke', '#E8E6DF'); line.setAttribute('stroke-width', '1'); line.setAttribute('stroke-dasharray', '4 3');
+        svg.appendChild(line);
+        return;
+      }
+      if(d.type === 'text'){
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', x1); t.setAttribute('y', y1);
+        t.setAttribute('fill', '#E8E6DF'); t.setAttribute('font-size', '11'); t.setAttribute('font-family', 'JetBrains Mono, monospace');
+        t.textContent = d.text;
+        svg.appendChild(t);
+        return;
+      }
+      if(!d.p2) return;
+      const x2 = timeScale.timeToCoordinate(d.p2.time);
+      const y2 = candleSeries.priceToCoordinate(d.p2.price);
+      if(x2 == null || y2 == null) return;
+
+      if(d.type === 'trendline'){
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+        line.setAttribute('stroke', '#35C6C6'); line.setAttribute('stroke-width', '2');
+        svg.appendChild(line);
+      } else if(d.type === 'rectangle'){
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', Math.min(x1,x2)); rect.setAttribute('y', Math.min(y1,y2));
+        rect.setAttribute('width', Math.abs(x2-x1)); rect.setAttribute('height', Math.abs(y2-y1));
+        rect.setAttribute('fill', 'rgba(53,198,198,0.10)'); rect.setAttribute('stroke', '#35C6C6'); rect.setAttribute('stroke-width', '1');
+        svg.appendChild(rect);
+      }
+    });
+  }
+
+  function setActiveTool(tool){
+    activeTool = tool;
+    pendingPoint = null;
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b => {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+  }
+
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+    btn.addEventListener('click', () => setActiveTool(btn.dataset.tool));
+  });
+
+  document.getElementById('clearDrawingsBtn').addEventListener('click', () => {
+    const symbol = currentSymbolStr();
+    const interval = document.getElementById('intervalSelect').value;
+    drawings = drawings.filter(d => !(d.symbol === symbol && d.interval === interval));
+    saveJSON('ledger_drawings', drawings);
+    renderDrawings();
+  });
+
+  chart.subscribeClick((param) => {
+    if(activeTool === 'cursor' || !param.point) return;
+    const price = candleSeries.coordinateToPrice(param.point.y);
+    const time = param.time || (currentCandles.length ? currentCandles[currentCandles.length-1].time : null);
+    if(price == null || time == null) return;
+    const symbol = currentSymbolStr();
+    const interval = document.getElementById('intervalSelect').value;
+
+    if(activeTool === 'hline'){
+      addDrawing({ type:'hline', symbol, interval, p1:{ time, price } });
+      setActiveTool('cursor');
+      return;
+    }
+    if(activeTool === 'text'){
+      const txt = prompt('Note text:');
+      if(txt) addDrawing({ type:'text', symbol, interval, p1:{ time, price }, text:txt });
+      setActiveTool('cursor');
+      return;
+    }
+    // two-click tools: trendline, rectangle
+    if(!pendingPoint){
+      pendingPoint = { time, price };
+    } else {
+      addDrawing({ type:activeTool, symbol, interval, p1:pendingPoint, p2:{ time, price } });
+      pendingPoint = null;
+      setActiveTool('cursor');
+    }
+  });
+
   // redraw bands on pan/zoom and on container resize (band pixel positions depend on both)
   chart.timeScale().subscribeVisibleTimeRangeChange(() => {
     renderKillZones(document.getElementById('intervalSelect').value);
+    renderDrawings();
   });
   new ResizeObserver(() => {
     renderKillZones(document.getElementById('intervalSelect').value);
+    renderDrawings();
   }).observe(document.querySelector('.chart-wrap'));
   setInterval(updateSessionBadge, 60000);
   updateSessionBadge();
@@ -1875,14 +2189,20 @@
     });
   }
 
+  let activePresetMin = 0;
+  let lastRenderedSignals = [];
+
   function renderSignals(signals, symbol){
+    lastRenderedSignals = signals;
     const feed = document.getElementById('signalFeed');
     feed.innerHTML = '';
-    if(signals.length === 0){
-      feed.innerHTML = '<div class="empty-state">No unmitigated order blocks in range right now. Try a different timeframe.</div>';
+    const filtered = signals.filter(s => s.score >= activePresetMin);
+    if(filtered.length === 0){
+      feed.innerHTML = `<div class="empty-state">${signals.length === 0 ? 'No unmitigated order blocks in range right now. Try a different timeframe.' : 'No signals meet the current preset threshold — try a lower one.'}</div>`;
       return;
     }
-    signals.forEach((s, idx) => {
+    const signalsToRender = filtered;
+    signalsToRender.forEach((s, idx) => {
       const card = document.createElement('div');
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
@@ -1906,7 +2226,7 @@
 
     feed.querySelectorAll('.log-trade-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const s = signals[parseInt(btn.dataset.idx, 10)];
+        const s = signalsToRender[parseInt(btn.dataset.idx, 10)];
         journal.push({
           id: Date.now() + '_' + Math.random().toString(36).slice(2,7),
           ts: Date.now(), symbol, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target,
@@ -1918,7 +2238,7 @@
     });
     feed.querySelectorAll('.calc-from-signal-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const s = signals[parseInt(btn.dataset.idx, 10)];
+        const s = signalsToRender[parseInt(btn.dataset.idx, 10)];
         document.getElementById('calcEntry').value = s.entry;
         document.getElementById('calcStop').value = s.stop;
         openCalc();
@@ -1939,13 +2259,16 @@
     document.getElementById('htfBadge').textContent = '…'; document.getElementById('htfBadge').className = 'htf-badge';
     document.getElementById('sentimentBadge').textContent = '…';
     try{
-      const [candles, htf, sentiment, fng, btcDom, lsRatio] = await Promise.all([
+      const wantBtcOverlay = document.getElementById('btcOverlayToggle').checked && symbol !== 'BTCUSDT';
+      const [candles, htf, sentiment, fng, btcDom, lsRatio, obImbalance, btcCandles] = await Promise.all([
         fetchKlines(symbol, interval, 500),
         fetchHTFTrend(symbol, interval),
         fetchSentiment(symbol),
         fetchFearGreed(),
         fetchBtcDominance(),
-        fetchLongShortRatio(symbol)
+        fetchLongShortRatio(symbol),
+        fetchOrderBookImbalance(symbol),
+        wantBtcOverlay ? fetchKlines('BTCUSDT', interval, 500) : Promise.resolve(null)
       ]);
       const swings = findSwings(candles);
       const zigzag = buildZigzag(swings);
@@ -1977,6 +2300,7 @@
       chart.timeScale().fitContent();
       currentCandles = candles;
       renderKillZones(interval);
+      renderDrawings();
 
       const htfBadge = document.getElementById('htfBadge');
       if(htf.interval && htf.trend){
@@ -2021,6 +2345,16 @@
       } else {
         lsRatioBadge.textContent = 'n/a';
       }
+
+      const obBadge = document.getElementById('obImbalanceBadge');
+      if(obImbalance){
+        obBadge.textContent = `${obImbalance.bidPct.toFixed(0)}% bid`;
+        obBadge.className = 'insight-val ' + (obImbalance.bidPct > 55 ? 'up' : (obImbalance.bidPct < 45 ? 'down' : ''));
+      } else {
+        obBadge.textContent = 'n/a';
+      }
+
+      renderBtcOverlay(candles, btcCandles);
 
       const last = candles[candles.length-1];
       const bias = computeDailyBias(htf.trend, majorTrend, range, last.close, sentiment);
@@ -2085,6 +2419,7 @@
   document.getElementById('loadBtn').addEventListener('click', run);
   document.getElementById('intervalSelect').addEventListener('change', run);
   document.getElementById('symbolSelect').addEventListener('change', () => { document.getElementById('customSymbol').value=''; run(); });
+  document.getElementById('btcOverlayToggle').addEventListener('change', () => run({ silent:true }));
   window.addEventListener('DOMContentLoaded', run);
 
   // ---------- backtest modal ----------
@@ -2320,17 +2655,22 @@
 
   let lastScreenerResults = [];
 
-  async function runScreener(){
+  let autoScanEnabled = false;
+  let autoScanInterval = null;
+  let knownScreenerTopKeys = new Set();
+
+  async function runScreener(opts){
+    const silent = opts && opts.silent;
     const interval = document.getElementById('intervalSelect').value;
     const statusEl = document.getElementById('screenerStatus');
     const scanBtn = document.getElementById('scanBtn');
-    scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
-    document.getElementById('screenerTable').innerHTML = '';
+    if(!silent){ scanBtn.disabled = true; scanBtn.textContent = 'Scanning…'; }
+    if(!silent) document.getElementById('screenerTable').innerHTML = '';
 
     const results = [];
     for(let i=0; i<watchlist.length; i++){
       const sym = watchlist[i];
-      statusEl.textContent = `Scanning ${sym}… (${i+1}/${watchlist.length})`;
+      if(!silent) statusEl.textContent = `Scanning ${sym}… (${i+1}/${watchlist.length})`;
       try{
         const candles = await fetchKlines(sym, interval, 300);
         const signals = analyzeSymbolQuick(candles);
@@ -2340,9 +2680,22 @@
 
     results.sort((a,b) => b.signal.score - a.signal.score);
     lastScreenerResults = results;
-    statusEl.textContent = `Scanned ${watchlist.length} pairs on ${interval} · ${results.length} with active setups`;
+    statusEl.textContent = `Scanned ${watchlist.length} pairs on ${interval} · ${results.length} with active setups` + (silent ? ' (auto)' : '');
     applyScreenerFilters();
-    scanBtn.disabled = false; scanBtn.textContent = 'Scan';
+    if(!silent){ scanBtn.disabled = false; scanBtn.textContent = 'Scan'; }
+
+    // continuous auto-scan: notify only on genuinely new high-confidence (score ≥6) setups
+    if(autoScanEnabled){
+      const strongResults = results.filter(r => r.signal.score >= 6);
+      const currentKeys = new Set(strongResults.map(r => `${r.symbol}_${r.signal.dir}_${r.signal.entry.toFixed(6)}`));
+      if(knownScreenerTopKeys.size > 0){
+        strongResults.forEach(r => {
+          const key = `${r.symbol}_${r.signal.dir}_${r.signal.entry.toFixed(6)}`;
+          if(!knownScreenerTopKeys.has(key)) notifyNewSignal(r.signal, r.symbol);
+        });
+      }
+      knownScreenerTopKeys = currentKeys;
+    }
   }
 
   function applyScreenerFilters(){
@@ -2396,7 +2749,23 @@
   document.getElementById('screenerOverlay').addEventListener('click', (e) => {
     if(e.target.id === 'screenerOverlay') closeScreener();
   });
-  document.getElementById('scanBtn').addEventListener('click', runScreener);
+  document.getElementById('scanBtn').addEventListener('click', () => runScreener());
+  document.getElementById('autoScanBtn').addEventListener('click', () => {
+    const btn = document.getElementById('autoScanBtn');
+    if(!autoScanEnabled){
+      autoScanEnabled = true;
+      knownScreenerTopKeys = new Set();
+      btn.textContent = 'Auto-scan: On (5m)';
+      btn.classList.add('active');
+      runScreener({ silent:true }); // establish baseline without spamming notifications
+      autoScanInterval = setInterval(() => runScreener({ silent:true }), 300000);
+    } else {
+      autoScanEnabled = false;
+      clearInterval(autoScanInterval); autoScanInterval = null;
+      btn.textContent = 'Auto-scan: Off';
+      btn.classList.remove('active');
+    }
+  });
   document.getElementById('filterMinScore').addEventListener('change', applyScreenerFilters);
   document.getElementById('filterDir').addEventListener('change', applyScreenerFilters);
   document.getElementById('filterMinRR').addEventListener('input', applyScreenerFilters);
@@ -2744,6 +3113,49 @@
     }
   });
 
+  // ---------- correlation checker ----------
+  async function runCorrelationCheck(){
+    const symA = document.getElementById('corrSymbolA').value.trim().toUpperCase();
+    const symB = document.getElementById('corrSymbolB').value.trim().toUpperCase();
+    const resultEl = document.getElementById('corrResult');
+    if(!symA || !symB){
+      resultEl.innerHTML = '<div class="bt-stat"><div class="lbl">Result</div><div class="val" style="font-size:12px; color:var(--text-dim);">Enter both symbols.</div></div>';
+      return;
+    }
+    resultEl.innerHTML = '<div class="bt-stat"><div class="lbl">Result</div><div class="val" style="font-size:12px; color:var(--text-dim);">Fetching…</div></div>';
+    const interval = document.getElementById('intervalSelect').value;
+    try{
+      const [candlesA, candlesB] = await Promise.all([
+        fetchKlines(symA, interval, 300),
+        fetchKlines(symB, interval, 300)
+      ]);
+      const corr = computeCorrelation(candlesA, candlesB);
+      if(!corr){
+        resultEl.innerHTML = '<div class="bt-stat"><div class="lbl">Result</div><div class="val" style="font-size:12px; color:var(--text-dim);">Not enough overlapping candles to compute correlation.</div></div>';
+        return;
+      }
+      const strength = Math.abs(corr.r) >= 0.7 ? 'Strong' : (Math.abs(corr.r) >= 0.4 ? 'Moderate' : 'Weak');
+      const direction = corr.r >= 0 ? 'positive' : 'negative';
+      resultEl.innerHTML = `
+        <div class="bt-stat"><div class="lbl">Correlation (r)</div><div class="val ${corr.r>=0?'up':'down'}">${corr.r.toFixed(2)}</div></div>
+        <div class="bt-stat"><div class="lbl">Strength</div><div class="val">${strength} ${direction}</div></div>
+        <div class="bt-stat"><div class="lbl">Sample size</div><div class="val">${corr.n} candles</div></div>
+      `;
+    }catch(e){
+      resultEl.innerHTML = '<div class="bt-stat"><div class="lbl">Result</div><div class="val" style="font-size:12px; color:var(--text-dim);">Could not fetch one of the symbols — check spelling.</div></div>';
+    }
+  }
+
+  function openCorrelation(){ document.getElementById('correlationOverlay').classList.add('open'); }
+  function closeCorrelation(){ document.getElementById('correlationOverlay').classList.remove('open'); }
+
+  document.getElementById('correlationBtn').addEventListener('click', openCorrelation);
+  document.getElementById('closeCorrelation').addEventListener('click', closeCorrelation);
+  document.getElementById('correlationOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'correlationOverlay') closeCorrelation();
+  });
+  document.getElementById('runCorrelationBtn').addEventListener('click', runCorrelationCheck);
+
   // ---------- position size calculator ----------
   function computeCalc(){
     const balance = parseFloat(document.getElementById('calcBalance').value) || 0;
@@ -2845,6 +3257,16 @@
     else if(e.key === '3'){ document.getElementById('intervalSelect').value = '4h'; run(); }
     else if(e.key === '4'){ document.getElementById('intervalSelect').value = '1d'; run(); }
   });
+  // ---------- strategy presets ----------
+  function setPreset(min, btnId){
+    activePresetMin = min;
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(btnId).classList.add('active');
+    renderSignals(lastRenderedSignals, (document.getElementById('customSymbol').value.trim() || document.getElementById('symbolSelect').value).toUpperCase());
+  }
+  document.getElementById('presetAll').addEventListener('click', () => setPreset(0, 'presetAll'));
+  document.getElementById('presetConservative').addEventListener('click', () => setPreset(6, 'presetConservative'));
+  document.getElementById('presetAggressive').addEventListener('click', () => setPreset(2, 'presetAggressive'));
 })();
 </script>
 </body>
