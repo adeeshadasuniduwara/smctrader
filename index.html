@@ -530,6 +530,7 @@
         <span><i class="swatch" style="background:var(--structure)"></i> BOS / CHoCH line</span>
         <span><i class="swatch" style="background:var(--danger); opacity:0.6"></i> Fair value gap</span>
         <span><i class="swatch" style="background:#C9A227"></i> Liquidity pool (solid = resting, dotted = swept)</span>
+        <span>Volume pane below chart &middot; "Vol ✓" = break on ≥1.4x avg volume</span>
       </div>
     </div>
     <div class="sidebar">
@@ -594,6 +595,14 @@
     borderUpColor: COLORS.up, borderDownColor: COLORS.down,
     wickUpColor: COLORS.up, wickDownColor: COLORS.down
   });
+  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.22 } });
+
+  const volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: 'volume' },
+    priceScaleId: 'volume',
+    color: COLORS.up
+  });
+  chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
   let obSeries = [];   // order block price-line boxes (rendered as line series pairs)
   let lastRun = null;  // cached { candles, blocks, symbol } from the most recent run(), used by the backtest modal
@@ -651,6 +660,32 @@
   }
 
   // ---------- SMC engine ----------
+  // 0. Rolling average volume, used to spot breaks and order blocks formed on unusually
+  //    heavy participation (absorption/climax volume) vs routine, low-conviction moves.
+  function computeAvgVolume(candles, period){
+    period = period || 20;
+    const avg = new Array(candles.length).fill(0);
+    let sum = 0;
+    for(let i=0;i<candles.length;i++){
+      sum += candles[i].volume;
+      if(i >= period) sum -= candles[i-period].volume;
+      avg[i] = i >= period-1 ? sum/period : sum/(i+1);
+    }
+    return avg;
+  }
+
+  // tags each structure event with whether the breaking candle traded on above-average
+  // volume (a genuine, well-participated break vs a low-volume/likely-to-fail one)
+  function tagEventVolume(candles, events, avgVol, mult){
+    mult = mult || 1.4;
+    events.forEach(ev => {
+      const v = candles[ev.i].volume;
+      const a = avgVol[ev.i] || v;
+      ev.volumeRatio = a > 0 ? v / a : 1;
+      ev.volumeConfirmed = ev.volumeRatio >= mult;
+    });
+  }
+
   // 1. Swing points via fractal (2 candles either side)
   function findSwings(candles){
     const swings = []; // {i, price, type: 'high'|'low'}
@@ -743,11 +778,11 @@
         const isDown = c.close < c.open;
         const isUp = c.close > c.open;
         if(wantDown && isDown){
-          blocks.push({ i:j, top:c.high, bottom:c.low, dir:'up', eventIndex:ev.i, kind:ev.kind, mitigated:false });
+          blocks.push({ i:j, top:c.high, bottom:c.low, dir:'up', eventIndex:ev.i, kind:ev.kind, mitigated:false, volumeConfirmed:!!ev.volumeConfirmed, volumeRatio:ev.volumeRatio||1 });
           break;
         }
         if(!wantDown && isUp){
-          blocks.push({ i:j, top:c.high, bottom:c.low, dir:'down', eventIndex:ev.i, kind:ev.kind, mitigated:false });
+          blocks.push({ i:j, top:c.high, bottom:c.low, dir:'down', eventIndex:ev.i, kind:ev.kind, mitigated:false, volumeConfirmed:!!ev.volumeConfirmed, volumeRatio:ev.volumeRatio||1 });
           break;
         }
       }
@@ -890,7 +925,8 @@
   //    extra confidence if an unmitigated FVG overlaps the same zone, higher confidence still
   //    if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal),
   //    a bonus if the entry sits on the "correct" side of equilibrium (buying in discount,
-  //    selling in premium), and a bonus if it agrees with the higher-timeframe trend.
+  //    selling in premium), a bonus if it agrees with the higher-timeframe trend, and a bonus
+  //    if the break itself happened on above-average volume (real participation, not drift).
   function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend){
     const signals = [];
     const lastEventByDir = {};
@@ -914,12 +950,14 @@
       const inGoodZone = range && (b.dir === 'up' ? entry < range.eq : entry > range.eq);
       const htfAligned = htfTrend && htfTrend === b.dir;
       const htfCounter = htfTrend && htfTrend !== b.dir;
+      const volConfirmed = !!b.volumeConfirmed;
 
       let mult = 2;
       if(confluentFVG) mult += 1;
       if(confluentSweep) mult += 1;
       if(inGoodZone) mult += 0.5;
       if(htfAligned) mult += 0.5;
+      if(volConfirmed) mult += 0.5;
       const target = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
 
       const basisParts = [b.kind];
@@ -927,8 +965,9 @@
       basisParts.push(confluentFVG ? 'FVG confluence' : null);
       basisParts.push(inGoodZone ? (b.dir === 'up' ? 'discount entry' : 'premium entry') : null);
       basisParts.push(htfAligned ? 'HTF aligned' : null);
+      basisParts.push(volConfirmed ? `vol ${b.volumeRatio.toFixed(1)}x avg` : null);
       const tags = basisParts.filter(Boolean);
-      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) + (htfAligned ? 2 : 0);
+      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) + (htfAligned ? 2 : 0) + (volConfirmed ? 1 : 0);
 
       signals.push({
         dir: b.dir,
@@ -942,11 +981,12 @@
         hasSweep: !!confluentSweep,
         inGoodZone: !!inGoodZone,
         htfAligned: !!htfAligned,
-        htfCounter: !!htfCounter
+        htfCounter: !!htfCounter,
+        volConfirmed
       });
     });
 
-    // highest-confidence (HTF + sweep + FVG + zone confluence) first, then most recent
+    // highest-confidence (HTF + sweep + FVG + zone + volume confluence) first, then most recent
     signals.sort((a,b) => (b.score - a.score) || (a.recency - b.recency));
     return signals.slice(0, 12);
   }
@@ -981,6 +1021,11 @@
   // ---------- rendering ----------
   function renderChart(candles){
     candleSeries.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
+    volumeSeries.setData(candles.map(c => ({
+      time: c.time,
+      value: c.volume,
+      color: c.close >= c.open ? 'rgba(240,180,41,0.5)' : 'rgba(124,92,252,0.5)'
+    })));
   }
 
   function renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range){
@@ -1095,7 +1140,7 @@
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
         <div class="row1">
-          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
+          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.volConfirmed ? '<span class="badge">Vol ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
           <div class="basis">${s.basis}</div>
         </div>
         <div class="grid">
@@ -1129,6 +1174,8 @@
       const zigzag = buildZigzag(swings);
       const range = computeDealingRange(zigzag);
       const events = buildStructure(candles, swings);
+      const avgVol = computeAvgVolume(candles);
+      tagEventVolume(candles, events, avgVol);
       const blocks = findOrderBlocks(candles, events);
       const fvgs = findFVGs(candles);
       const pools = findLiquidityPools(candles, swings);
