@@ -501,6 +501,15 @@
   .bt-table tr:last-child td{ border-bottom:none; }
   .bt-table .win{ color:var(--long); }
   .bt-table .loss{ color:var(--short); }
+  .load-btn{
+    background:transparent;
+    color:var(--structure);
+    border:1px solid var(--structure-dim);
+    font-size:10px;
+    padding:4px 10px;
+    border-radius:3px;
+  }
+  .load-btn:hover{ background:rgba(53,198,198,0.1); }
 
   @media (max-width: 860px){
     main{ flex-direction:column; }
@@ -542,11 +551,13 @@
       <button id="loadBtn">Load</button>
       <button id="backtestBtn" class="secondary-btn" disabled>Backtest</button>
       <button id="alertsBtn" class="secondary-btn">🔔 Alerts: Off</button>
+      <button id="screenerBtn" class="secondary-btn">Screener</button>
     </div>
     <div class="price-tag">
       <div class="px" id="pxNow">&mdash;</div>
       <div class="chg" id="pxChg">&mdash;</div>
       <div class="htf-badge" id="htfBadge">&mdash;</div>
+      <div class="htf-badge" id="sentimentBadge">&mdash;</div>
     </div>
   </header>
 
@@ -565,11 +576,14 @@
       </div>
       <div class="legend">
         <span><i class="swatch" style="background:#3A4250"></i> Structure zigzag (swing pivots)</span>
+        <span><i class="swatch" style="background:#E8E6DF"></i> External/major structure</span>
+        <span><i class="swatch" style="background:#D48FD8"></i> Fib OTE zone (61.8&ndash;79%)</span>
         <span><i class="swatch" style="background:var(--long)"></i> Bullish order block</span>
         <span><i class="swatch" style="background:var(--short)"></i> Bearish order block</span>
         <span><i class="swatch" style="background:var(--structure)"></i> BOS / CHoCH line</span>
         <span><i class="swatch" style="background:var(--danger); opacity:0.6"></i> Fair value gap</span>
         <span><i class="swatch" style="background:#C9A227"></i> Liquidity pool (solid = resting, dotted = swept)</span>
+        <span><i class="swatch" style="background:#C9A227; opacity:0.6"></i> Breaker block (dashed, flipped polarity)</span>
         <span>Volume pane below chart &middot; "Vol ✓" = break on ≥1.4x avg volume</span>
       </div>
       <div class="legend" id="killZoneLegend">
@@ -606,6 +620,23 @@
       <div id="btChart" class="bt-chart"></div>
       <div class="bt-table-wrap">
         <table class="bt-table" id="btTable"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="screenerOverlay">
+    <div class="modal-panel" style="max-width:820px;">
+      <div class="modal-head">
+        <h2>Screener &mdash; <span>top confluence setups</span></h2>
+        <button class="close-btn" id="closeScreener">✕</button>
+      </div>
+      <p class="modal-sub">Scans a fixed list of major USDT pairs on the current chart timeframe for the highest-scoring unmitigated order block / breaker setup on each. Runs the same structure + liquidity + volume + OTE + major-structure confluence as the main signal feed, minus HTF and funding/OI (skipped here to keep the scan fast).</p>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+        <button id="scanBtn" class="secondary-btn">Scan</button>
+        <span id="screenerStatus" style="font-size:11px; color:var(--text-dim);">Idle</span>
+      </div>
+      <div class="bt-table-wrap" style="max-height:360px;">
+        <table class="bt-table" id="screenerTable"></table>
       </div>
     </div>
   </div>
@@ -706,6 +737,40 @@
     }
   }
 
+  // Funding rate + open interest trend from Binance USD-M futures — used as a contrarian
+  // sentiment check: a heavily positive funding rate means longs are paying to stay long
+  // (a "crowded long" the market tends to unwind), and vice versa for negative funding.
+  const FUNDING_THRESHOLD = 0.0004; // 0.04% per 8h funding interval
+
+  async function fetchSentiment(symbol){
+    try{
+      const [premRes, oiRes] = await Promise.all([
+        fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`),
+        fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=6`)
+      ]);
+      let fundingRate = null, oiChangePct = null;
+      if(premRes.ok){
+        const prem = await premRes.json();
+        fundingRate = parseFloat(prem.lastFundingRate);
+      }
+      if(oiRes.ok){
+        const oiHist = await oiRes.json();
+        if(Array.isArray(oiHist) && oiHist.length >= 2){
+          const first = parseFloat(oiHist[0].sumOpenInterest);
+          const last = parseFloat(oiHist[oiHist.length-1].sumOpenInterest);
+          oiChangePct = first > 0 ? ((last - first) / first) * 100 : null;
+        }
+      }
+      if(fundingRate == null && oiChangePct == null) return null;
+      const crowded = fundingRate != null
+        ? (fundingRate > FUNDING_THRESHOLD ? 'long' : (fundingRate < -FUNDING_THRESHOLD ? 'short' : null))
+        : null;
+      return { fundingRate, oiChangePct, crowded };
+    }catch(e){
+      return null; // futures data may not exist for this symbol (e.g. spot-only pairs) — fail quietly
+    }
+  }
+
   // ---------- SMC engine ----------
   // 0. Rolling average volume, used to spot breaks and order blocks formed on unusually
   //    heavy participation (absorption/climax volume) vs routine, low-conviction moves.
@@ -734,14 +799,16 @@
   }
 
   // 1. Swing points via fractal (2 candles either side)
-  function findSwings(candles){
+  function findSwings(candles, leftRight){
+    leftRight = leftRight || 2;
     const swings = []; // {i, price, type: 'high'|'low'}
-    for(let i=2;i<candles.length-2;i++){
+    for(let i=leftRight;i<candles.length-leftRight;i++){
       const c = candles[i];
-      const isHigh = c.high > candles[i-1].high && c.high > candles[i-2].high &&
-                     c.high > candles[i+1].high && c.high > candles[i+2].high;
-      const isLow = c.low < candles[i-1].low && c.low < candles[i-2].low &&
-                    c.low < candles[i+1].low && c.low < candles[i+2].low;
+      let isHigh = true, isLow = true;
+      for(let k=1;k<=leftRight;k++){
+        if(!(c.high > candles[i-k].high && c.high > candles[i+k].high)) isHigh = false;
+        if(!(c.low < candles[i-k].low && c.low < candles[i+k].low)) isLow = false;
+      }
       if(isHigh) swings.push({ i, price:c.high, type:'high' });
       if(isLow) swings.push({ i, price:c.low, type:'low' });
     }
@@ -775,6 +842,29 @@
     const high = Math.max(...prices);
     const low = Math.min(...prices);
     return { high, low, eq: (high + low) / 2 };
+  }
+
+  // 1d. Fibonacci OTE (Optimal Trade Entry) zone: the 61.8%–79% retracement band of the
+  // impulse leg that produced the break — the classic ICT "golden zone" where an order
+  // block retest carries extra weight because it also lines up with a Fib confluence.
+  function computeOTE(candles, b){
+    const scanEnd = Math.min(candles.length - 1, (b.mitigatedAt != null ? b.mitigatedAt : candles.length - 1));
+    if(scanEnd <= b.eventIndex) return null;
+    const segment = candles.slice(b.eventIndex, scanEnd + 1);
+    if(!segment.length) return null;
+    if(b.dir === 'up'){
+      const legLow = b.bottom;
+      const legHigh = Math.max(...segment.map(c => c.high));
+      if(legHigh <= legLow) return null;
+      const span = legHigh - legLow;
+      return { lower: legHigh - span * 0.79, upper: legHigh - span * 0.618, legLow, legHigh };
+    } else {
+      const legHigh = b.top;
+      const legLow = Math.min(...segment.map(c => c.low));
+      if(legHigh <= legLow) return null;
+      const span = legHigh - legLow;
+      return { lower: legLow + span * 0.618, upper: legLow + span * 0.79, legLow, legHigh };
+    }
   }
 
   // 2. Walk swings to build structure events: BOS (trend continuation break) and CHoCH (trend reversal break)
@@ -842,6 +932,35 @@
       }
     });
     return blocks;
+  }
+
+  // 3b. Breaker blocks: when a mitigated order block later gets fully closed through on the
+  // opposite side, the zone's role flips — a failed bullish OB becomes bearish resistance
+  // (and vice versa). This is order flow reversing, not the original bias, so it's tracked
+  // as a distinct zone type rather than reused as the same-direction block.
+  function findBreakerBlocks(candles, blocks){
+    const breakers = [];
+    blocks.forEach(b => {
+      if(!b.mitigated || b.mitigatedAt == null) return;
+      for(let k=b.mitigatedAt+1; k<Math.min(candles.length, b.mitigatedAt+15); k++){
+        const c = candles[k];
+        if(b.dir === 'up' && c.close < b.bottom){
+          breakers.push({ i:b.i, top:b.top, bottom:b.bottom, dir:'down', kind:'Breaker', eventIndex:k, mitigated:false, volumeConfirmed:false, volumeRatio:1, isBreaker:true });
+          break;
+        }
+        if(b.dir === 'down' && c.close > b.top){
+          breakers.push({ i:b.i, top:b.top, bottom:b.bottom, dir:'up', kind:'Breaker', eventIndex:k, mitigated:false, volumeConfirmed:false, volumeRatio:1, isBreaker:true });
+          break;
+        }
+      }
+    });
+    breakers.forEach(b => {
+      for(let k=b.eventIndex+1; k<candles.length; k++){
+        const c = candles[k];
+        if(c.low <= b.top && c.high >= b.bottom){ b.mitigated = true; b.mitigatedAt = k; break; }
+      }
+    });
+    return breakers;
   }
 
   // 4. Fair value gaps: 3-candle imbalance
@@ -972,9 +1091,11 @@
   //    extra confidence if an unmitigated FVG overlaps the same zone, higher confidence still
   //    if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal),
   //    a bonus if the entry sits on the "correct" side of equilibrium (buying in discount,
-  //    selling in premium), a bonus if it agrees with the higher-timeframe trend, and a bonus
-  //    if the break itself happened on above-average volume (real participation, not drift).
-  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend){
+  //    selling in premium), a bonus if it agrees with the higher-timeframe trend, a bonus if
+  //    the break happened on above-average volume, a bonus if the entry sits in the Fibonacci
+  //    OTE (61.8%–79%) zone of its impulse leg, a bonus if it agrees with the higher-degree
+  //    ("external") structure trend, and a contrarian bonus against crowded futures positioning.
+  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend, majorTrend, sentiment){
     const signals = [];
     const lastEventByDir = {};
     events.forEach(ev => { lastEventByDir[ev.dir] = ev; });
@@ -998,6 +1119,14 @@
       const htfAligned = htfTrend && htfTrend === b.dir;
       const htfCounter = htfTrend && htfTrend !== b.dir;
       const volConfirmed = !!b.volumeConfirmed;
+      const majorAligned = majorTrend && majorTrend === b.dir;
+
+      const ote = computeOTE(candles, b);
+      const inOTE = !!(ote && entry >= ote.lower && entry <= ote.upper);
+
+      // crowded-long funding means shorts are contrarian-favored, and vice versa
+      const sentimentAligned = !!(sentiment && sentiment.crowded &&
+        ((sentiment.crowded === 'long' && b.dir === 'down') || (sentiment.crowded === 'short' && b.dir === 'up')));
 
       let mult = 2;
       if(confluentFVG) mult += 1;
@@ -1005,20 +1134,27 @@
       if(inGoodZone) mult += 0.5;
       if(htfAligned) mult += 0.5;
       if(volConfirmed) mult += 0.5;
+      if(inOTE) mult += 0.5;
+      if(majorAligned) mult += 0.5;
+      if(sentimentAligned) mult += 0.5;
       const target = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
 
-      const basisParts = [b.kind];
+      const basisParts = [b.isBreaker ? 'Breaker' : b.kind];
       basisParts.push(confluentSweep ? 'liquidity sweep' : null);
       basisParts.push(confluentFVG ? 'FVG confluence' : null);
       basisParts.push(inGoodZone ? (b.dir === 'up' ? 'discount entry' : 'premium entry') : null);
       basisParts.push(htfAligned ? 'HTF aligned' : null);
       basisParts.push(volConfirmed ? `vol ${b.volumeRatio.toFixed(1)}x avg` : null);
+      basisParts.push(inOTE ? 'OTE zone' : null);
+      basisParts.push(majorAligned ? 'major structure' : null);
+      basisParts.push(sentimentAligned ? `crowded-${sentiment.crowded} unwind` : null);
       const tags = basisParts.filter(Boolean);
-      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) + (htfAligned ? 2 : 0) + (volConfirmed ? 1 : 0);
+      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) +
+        (htfAligned ? 2 : 0) + (volConfirmed ? 1 : 0) + (inOTE ? 1 : 0) + (majorAligned ? 1 : 0) + (sentimentAligned ? 1 : 0);
 
       signals.push({
         dir: b.dir,
-        basis: tags.length > 1 ? tags.join(' + ') : tags[0] + ' order block',
+        basis: tags.length > 1 ? tags.join(' + ') : `${tags[0]} ${b.isBreaker ? 'breaker block' : 'order block'}`,
         entry, stop, target,
         rr: (Math.abs(target-entry)/risk).toFixed(1),
         blockIndex: b.i,
@@ -1029,11 +1165,15 @@
         inGoodZone: !!inGoodZone,
         htfAligned: !!htfAligned,
         htfCounter: !!htfCounter,
-        volConfirmed
+        volConfirmed,
+        inOTE,
+        majorAligned,
+        sentimentAligned,
+        isBreaker: !!b.isBreaker
       });
     });
 
-    // highest-confidence (HTF + sweep + FVG + zone + volume confluence) first, then most recent
+    // highest-confidence (HTF + sweep + FVG + zone + volume + OTE + major structure + sentiment) first, then most recent
     signals.sort((a,b) => (b.score - a.score) || (a.recency - b.recency));
     return signals.slice(0, 12);
   }
@@ -1146,7 +1286,7 @@
   setInterval(updateSessionBadge, 60000);
   updateSessionBadge();
 
-  function renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range){
+  function renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range, extZigzag){
     clearOverlays();
     markers = [];
 
@@ -1182,6 +1322,20 @@
       obSeries.push(zzLine); // reuse obSeries bucket for cleanup
     }
 
+    // external / major structure: a wider-fractal zigzag drawn bolder on top, showing the
+    // higher-degree swing skeleton the internal structure sits inside
+    if(extZigzag && extZigzag.length > 1){
+      const extLine = chart.addLineSeries({
+        color: '#E8E6DF',
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        lastValueVisible: false,
+        priceLineVisible: false
+      });
+      extLine.setData(extZigzag.map(p => ({ time: candles[p.i].time, value: p.price })));
+      obSeries.push(extLine);
+    }
+
     // liquidity pools: unswept pools drawn solid (still resting), swept pools drawn faint (already grabbed)
     pools.slice(-16).forEach(p => {
       const endTime = candles[Math.min(candles.length-1, (p.sweptAt != null ? p.sweptAt : p.endI) + 15)].time;
@@ -1196,15 +1350,30 @@
       poolSeries.push(line);
     });
 
-    // order blocks as shaded boxes -> approximate with two horizontal lines (top/bottom) over the block's forward span
-    blocks.filter(b => !b.mitigated).slice(-10).forEach(b => {
-      const color = b.dir === 'up' ? COLORS.up : COLORS.down;
+    // order blocks (and breaker blocks) as shaded boxes -> two horizontal lines (top/bottom)
+    // over the block's forward span; breakers drawn dashed in a distinct bronze tone since
+    // they represent a flipped/invalidated zone rather than the original order block
+    const shownBlocks = blocks.filter(b => !b.mitigated).slice(-14);
+    shownBlocks.forEach(b => {
+      const color = b.isBreaker ? '#C9A227' : (b.dir === 'up' ? COLORS.up : COLORS.down);
+      const style = b.isBreaker ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted;
       const endTime = candles[Math.min(candles.length-1, b.i+40)].time;
-      const topLine = chart.addLineSeries({ color, lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted, lastValueVisible:false, priceLineVisible:false });
-      const botLine = chart.addLineSeries({ color, lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted, lastValueVisible:false, priceLineVisible:false });
+      const topLine = chart.addLineSeries({ color, lineWidth:1, lineStyle:style, lastValueVisible:false, priceLineVisible:false });
+      const botLine = chart.addLineSeries({ color, lineWidth:1, lineStyle:style, lastValueVisible:false, priceLineVisible:false });
       topLine.setData([{ time:candles[b.i].time, value:b.top }, { time:endTime, value:b.top }]);
       botLine.setData([{ time:candles[b.i].time, value:b.bottom }, { time:endTime, value:b.bottom }]);
       obSeries.push(topLine, botLine);
+
+      // OTE (golden zone) band for this block's impulse leg, drawn as a soft magenta pair
+      const ote = computeOTE(candles, b);
+      if(ote){
+        const oteEndTime = candles[Math.min(candles.length-1, b.eventIndex+40)].time;
+        const oteTop = chart.addLineSeries({ color:'#D48FD8', lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted, lastValueVisible:false, priceLineVisible:false });
+        const oteBot = chart.addLineSeries({ color:'#D48FD8', lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted, lastValueVisible:false, priceLineVisible:false });
+        oteTop.setData([{ time:candles[b.eventIndex].time, value:ote.upper }, { time:oteEndTime, value:ote.upper }]);
+        oteBot.setData([{ time:candles[b.eventIndex].time, value:ote.lower }, { time:oteEndTime, value:ote.lower }]);
+        obSeries.push(oteTop, oteBot);
+      }
     });
 
     // FVGs, unmitigated only, last 8
@@ -1258,7 +1427,7 @@
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
         <div class="row1">
-          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.volConfirmed ? '<span class="badge">Vol ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
+          <div class="kind">${s.isBreaker ? '<span class="badge zone">BREAKER</span>' : ''}${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.volConfirmed ? '<span class="badge">Vol ✓</span>' : ''}${s.inOTE ? '<span class="badge">OTE</span>' : ''}${s.majorAligned ? '<span class="badge zone">Major ✓</span>' : ''}${s.sentimentAligned ? '<span class="badge">Sentiment ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
           <div class="basis">${s.basis}</div>
         </div>
         <div class="grid">
@@ -1283,10 +1452,12 @@
 
     if(!silent){ btn.disabled = true; btn.textContent = 'Loading…'; }
     document.getElementById('htfBadge').textContent = '…'; document.getElementById('htfBadge').className = 'htf-badge';
+    document.getElementById('sentimentBadge').textContent = '…';
     try{
-      const [candles, htf] = await Promise.all([
+      const [candles, htf, sentiment] = await Promise.all([
         fetchKlines(symbol, interval, 500),
-        fetchHTFTrend(symbol, interval)
+        fetchHTFTrend(symbol, interval),
+        fetchSentiment(symbol)
       ]);
       const swings = findSwings(candles);
       const zigzag = buildZigzag(swings);
@@ -1295,12 +1466,21 @@
       const avgVol = computeAvgVolume(candles);
       tagEventVolume(candles, events, avgVol);
       const blocks = findOrderBlocks(candles, events);
+      const breakers = findBreakerBlocks(candles, blocks);
+      const allBlocks = blocks.concat(breakers);
       const fvgs = findFVGs(candles);
       const pools = findLiquidityPools(candles, swings);
-      const signals = generateSignals(candles, events, blocks, fvgs, pools, range, htf.trend);
+
+      // external / major structure: same pipeline, wider fractal window
+      const extSwings = findSwings(candles, 6);
+      const extZigzag = buildZigzag(extSwings);
+      const extEvents = buildStructure(candles, extSwings);
+      const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
+
+      const signals = generateSignals(candles, events, allBlocks, fvgs, pools, range, htf.trend, majorTrend, sentiment);
 
       renderChart(candles);
-      renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range);
+      renderOverlays(candles, allBlocks, events, fvgs, pools, zigzag, range, extZigzag);
       renderRibbon(events);
       renderSignals(signals, symbol);
       chart.timeScale().fitContent();
@@ -1319,6 +1499,18 @@
         htfBadge.className = 'htf-badge';
       }
 
+      const sentimentBadge = document.getElementById('sentimentBadge');
+      if(sentiment && sentiment.fundingRate != null){
+        const fundingPct = (sentiment.fundingRate * 100).toFixed(3);
+        const oiTxt = sentiment.oiChangePct != null ? `${sentiment.oiChangePct >= 0 ? '+' : ''}${sentiment.oiChangePct.toFixed(1)}% OI` : 'OI n/a';
+        const crowdTxt = sentiment.crowded ? ` · crowded ${sentiment.crowded}` : '';
+        sentimentBadge.textContent = `Funding ${fundingPct}% · ${oiTxt}${crowdTxt}`;
+        sentimentBadge.className = 'htf-badge' + (sentiment.crowded ? (' ' + (sentiment.crowded === 'long' ? 'down' : 'up')) : '');
+      } else {
+        sentimentBadge.textContent = 'Funding/OI: n/a (no futures market)';
+        sentimentBadge.className = 'htf-badge';
+      }
+
       const last = candles[candles.length-1];
       const prev = candles[candles.length-2];
       const chg = ((last.close - prev.close) / prev.close) * 100;
@@ -1328,7 +1520,7 @@
       chgEl.className = 'chg ' + (chg >= 0 ? 'up' : 'down');
       document.getElementById('lastUpdated').textContent = symbol + ' · ' + interval + ' · updated ' + new Date().toLocaleTimeString();
 
-      lastRun = { candles, blocks, symbol, interval };
+      lastRun = { candles, blocks: allBlocks, symbol, interval };
       document.getElementById('backtestBtn').disabled = false;
 
       // diff against the previous signal set to fire alerts only for genuinely new setups
@@ -1456,6 +1648,98 @@
       alertsBtn.classList.remove('active');
     }
   });
+
+  // ---------- multi-symbol screener ----------
+  const SCREENER_SYMBOLS = [
+    'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT','DOGEUSDT','LINKUSDT',
+    'AVAXUSDT','DOTUSDT','TRXUSDT','LTCUSDT','ATOMUSDT','NEARUSDT','APTUSDT','ARBUSDT',
+    'OPUSDT','SUIUSDT'
+  ];
+
+  // runs the same structure/liquidity/volume/OTE/major-structure pipeline as the main
+  // chart, but skips the HTF and funding/OI fetches (one extra request per symbol would
+  // triple the total calls for a scan across ~18 pairs) — returns just the ranked signals
+  function analyzeSymbolQuick(candles){
+    const swings = findSwings(candles);
+    const zigzag = buildZigzag(swings);
+    const range = computeDealingRange(zigzag);
+    const events = buildStructure(candles, swings);
+    const avgVol = computeAvgVolume(candles);
+    tagEventVolume(candles, events, avgVol);
+    const blocks = findOrderBlocks(candles, events);
+    const breakers = findBreakerBlocks(candles, blocks);
+    const allBlocks = blocks.concat(breakers);
+    const fvgs = findFVGs(candles);
+    const pools = findLiquidityPools(candles, swings);
+    const extSwings = findSwings(candles, 6);
+    const extEvents = buildStructure(candles, extSwings);
+    const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
+    return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null);
+  }
+
+  async function runScreener(){
+    const interval = document.getElementById('intervalSelect').value;
+    const statusEl = document.getElementById('screenerStatus');
+    const scanBtn = document.getElementById('scanBtn');
+    scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
+    document.getElementById('screenerTable').innerHTML = '';
+
+    const results = [];
+    for(let i=0; i<SCREENER_SYMBOLS.length; i++){
+      const sym = SCREENER_SYMBOLS[i];
+      statusEl.textContent = `Scanning ${sym}… (${i+1}/${SCREENER_SYMBOLS.length})`;
+      try{
+        const candles = await fetchKlines(sym, interval, 300);
+        const signals = analyzeSymbolQuick(candles);
+        if(signals.length) results.push({ symbol: sym, signal: signals[0] });
+      }catch(e){ /* skip on failure — e.g. rate limit or an unlisted pair */ }
+    }
+
+    results.sort((a,b) => b.signal.score - a.signal.score);
+    statusEl.textContent = `Scanned ${SCREENER_SYMBOLS.length} pairs on ${interval} · ${results.length} with active setups`;
+    renderScreenerResults(results);
+    scanBtn.disabled = false; scanBtn.textContent = 'Scan';
+  }
+
+  function renderScreenerResults(results){
+    const table = document.getElementById('screenerTable');
+    if(results.length === 0){
+      table.innerHTML = '<tbody><tr><td style="padding:16px;color:var(--text-dim);">No active setups found across the scanned pairs on this timeframe.</td></tr></tbody>';
+      return;
+    }
+    const rows = results.map(r => `
+      <tr>
+        <td>${r.symbol.replace('USDT','')}/USDT</td>
+        <td class="${r.signal.dir === 'up' ? 'win' : 'loss'}">${r.signal.dir === 'up' ? 'LONG' : 'SHORT'}</td>
+        <td>${r.signal.basis}</td>
+        <td>${r.signal.score}</td>
+        <td>${r.signal.rr}</td>
+        <td>${r.signal.entry.toFixed(4)}</td>
+        <td><button class="load-btn" data-symbol="${r.symbol}">Load</button></td>
+      </tr>
+    `).join('');
+    table.innerHTML = `
+      <thead><tr><th>Pair</th><th>Dir</th><th>Basis</th><th>Score</th><th>R:R</th><th>Entry</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    `;
+    table.querySelectorAll('.load-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.getElementById('customSymbol').value = btn.dataset.symbol;
+        closeScreener();
+        run();
+      });
+    });
+  }
+
+  function openScreener(){ document.getElementById('screenerOverlay').classList.add('open'); }
+  function closeScreener(){ document.getElementById('screenerOverlay').classList.remove('open'); }
+
+  document.getElementById('screenerBtn').addEventListener('click', openScreener);
+  document.getElementById('closeScreener').addEventListener('click', closeScreener);
+  document.getElementById('screenerOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'screenerOverlay') closeScreener();
+  });
+  document.getElementById('scanBtn').addEventListener('click', runScreener);
 })();
 </script>
 </body>
