@@ -119,6 +119,18 @@
     font-size:20px;
   }
   .price-tag .chg{ font-size:12px; }
+  .htf-badge{
+    margin-top:6px;
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.04em;
+    padding:3px 8px;
+    border-radius:10px;
+    border:1px solid var(--line);
+    color:var(--text-dim);
+  }
+  .htf-badge.up{ color:var(--long); border-color:rgba(240,180,41,0.4); background:rgba(240,180,41,0.08); }
+  .htf-badge.down{ color:var(--short); border-color:rgba(124,92,252,0.4); background:rgba(124,92,252,0.08); }
   .up{ color:var(--long); }
   .down{ color:var(--short); }
 
@@ -282,6 +294,12 @@
     border-color:rgba(53,198,198,0.4);
     text-transform:uppercase;
   }
+  .badge.warn{
+    color:var(--danger);
+    background:rgba(232,92,74,0.12);
+    border-color:rgba(232,92,74,0.4);
+    text-transform:uppercase;
+  }
   .signal-card .basis{
     font-size:10px;
     color:var(--text-dim);
@@ -366,6 +384,7 @@
     <div class="price-tag">
       <div class="px" id="pxNow">&mdash;</div>
       <div class="chg" id="pxChg">&mdash;</div>
+      <div class="htf-badge" id="htfBadge">&mdash;</div>
     </div>
   </header>
 
@@ -464,6 +483,25 @@
       close: parseFloat(k[4]),
       volume: parseFloat(k[5])
     }));
+  }
+
+  // maps the chart's timeframe to the next timeframe up, used for HTF bias confirmation
+  const HTF_MAP = { '15m':'1h', '1h':'4h', '4h':'1d', '1d':'1w' };
+
+  // fetches the higher timeframe and returns its current structural trend:
+  // 'up' if the most recent BOS/CHoCH broke upward, 'down' if downward, null if no data/events yet
+  async function fetchHTFTrend(symbol, ltfInterval){
+    const htfInterval = HTF_MAP[ltfInterval];
+    if(!htfInterval) return { interval:null, trend:null };
+    try{
+      const htfCandles = await fetchKlines(symbol, htfInterval, 200);
+      const htfSwings = findSwings(htfCandles);
+      const htfEvents = buildStructure(htfCandles, htfSwings);
+      const trend = htfEvents.length ? htfEvents[htfEvents.length-1].dir : null;
+      return { interval:htfInterval, trend };
+    }catch(e){
+      return { interval:htfInterval, trend:null };
+    }
   }
 
   // ---------- SMC engine ----------
@@ -656,9 +694,9 @@
   // 6. Signal generation: unmitigated order block aligned with the prevailing structure event,
   //    extra confidence if an unmitigated FVG overlaps the same zone, higher confidence still
   //    if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal),
-  //    and a further bonus if the entry sits on the "correct" side of equilibrium
-  //    (buying in discount, selling in premium — the classic SMC dealing-range rule).
-  function generateSignals(candles, events, blocks, fvgs, pools, range){
+  //    a bonus if the entry sits on the "correct" side of equilibrium (buying in discount,
+  //    selling in premium), and a bonus if it agrees with the higher-timeframe trend.
+  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend){
     const signals = [];
     const lastEventByDir = {};
     events.forEach(ev => { lastEventByDir[ev.dir] = ev; });
@@ -679,19 +717,23 @@
       const risk = Math.abs(entry - stop);
 
       const inGoodZone = range && (b.dir === 'up' ? entry < range.eq : entry > range.eq);
+      const htfAligned = htfTrend && htfTrend === b.dir;
+      const htfCounter = htfTrend && htfTrend !== b.dir;
 
       let mult = 2;
       if(confluentFVG) mult += 1;
       if(confluentSweep) mult += 1;
       if(inGoodZone) mult += 0.5;
+      if(htfAligned) mult += 0.5;
       const target = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
 
       const basisParts = [b.kind];
       basisParts.push(confluentSweep ? 'liquidity sweep' : null);
       basisParts.push(confluentFVG ? 'FVG confluence' : null);
       basisParts.push(inGoodZone ? (b.dir === 'up' ? 'discount entry' : 'premium entry') : null);
+      basisParts.push(htfAligned ? 'HTF aligned' : null);
       const tags = basisParts.filter(Boolean);
-      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0);
+      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) + (htfAligned ? 2 : 0);
 
       signals.push({
         dir: b.dir,
@@ -703,11 +745,13 @@
         recency: candles.length - b.eventIndex,
         score,
         hasSweep: !!confluentSweep,
-        inGoodZone: !!inGoodZone
+        inGoodZone: !!inGoodZone,
+        htfAligned: !!htfAligned,
+        htfCounter: !!htfCounter
       });
     });
 
-    // highest-confidence (sweep + FVG + zone confluence) first, then most recent
+    // highest-confidence (HTF + sweep + FVG + zone confluence) first, then most recent
     signals.sort((a,b) => (b.score - a.score) || (a.recency - b.recency));
     return signals.slice(0, 12);
   }
@@ -829,7 +873,7 @@
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
         <div class="row1">
-          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}</div>
+          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
           <div class="basis">${s.basis}</div>
         </div>
         <div class="grid">
@@ -852,8 +896,12 @@
     const symbol = (customSymbol.value.trim() || symbolSelect.value).toUpperCase();
 
     btn.disabled = true; btn.textContent = 'Loading…';
+    document.getElementById('htfBadge').textContent = '…'; document.getElementById('htfBadge').className = 'htf-badge';
     try{
-      const candles = await fetchKlines(symbol, interval, 500);
+      const [candles, htf] = await Promise.all([
+        fetchKlines(symbol, interval, 500),
+        fetchHTFTrend(symbol, interval)
+      ]);
       const swings = findSwings(candles);
       const zigzag = buildZigzag(swings);
       const range = computeDealingRange(zigzag);
@@ -861,13 +909,25 @@
       const blocks = findOrderBlocks(candles, events);
       const fvgs = findFVGs(candles);
       const pools = findLiquidityPools(candles, swings);
-      const signals = generateSignals(candles, events, blocks, fvgs, pools, range);
+      const signals = generateSignals(candles, events, blocks, fvgs, pools, range, htf.trend);
 
       renderChart(candles);
       renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range);
       renderRibbon(events);
       renderSignals(signals, symbol);
       chart.timeScale().fitContent();
+
+      const htfBadge = document.getElementById('htfBadge');
+      if(htf.interval && htf.trend){
+        htfBadge.textContent = `HTF ${htf.interval}: ${htf.trend === 'up' ? '↑ Bullish' : '↓ Bearish'}`;
+        htfBadge.className = 'htf-badge ' + htf.trend;
+      } else if(htf.interval){
+        htfBadge.textContent = `HTF ${htf.interval}: no clear trend`;
+        htfBadge.className = 'htf-badge';
+      } else {
+        htfBadge.textContent = 'HTF: n/a (top timeframe)';
+        htfBadge.className = 'htf-badge';
+      }
 
       const last = candles[candles.length-1];
       const prev = candles[candles.length-2];
