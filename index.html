@@ -209,6 +209,43 @@
     flex:1;
     min-height:420px;
   }
+  .chart-wrap{
+    position:relative;
+    flex:1;
+    min-height:420px;
+  }
+  .chart-wrap #chart{
+    position:absolute;
+    inset:0;
+  }
+  .kz-overlay{
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    overflow:hidden;
+    z-index:2;
+  }
+  .kz-band{
+    position:absolute;
+    top:0;
+    height:100%;
+  }
+  .kz-label{
+    position:absolute;
+    top:6px;
+    left:4px;
+    font-size:9px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    white-space:nowrap;
+    writing-mode:vertical-rl;
+  }
+  .session-badge{
+    font-size:10px;
+    color:var(--text-dim);
+    padding:0 20px;
+  }
+  .session-badge b{ color:var(--text); }
   .legend{
     display:flex;
     gap:18px;
@@ -522,7 +559,10 @@
 
   <main>
     <div class="chart-col">
-      <div id="chart"></div>
+      <div class="chart-wrap">
+        <div id="chart"></div>
+        <div class="kz-overlay" id="kzOverlay"></div>
+      </div>
       <div class="legend">
         <span><i class="swatch" style="background:#3A4250"></i> Structure zigzag (swing pivots)</span>
         <span><i class="swatch" style="background:var(--long)"></i> Bullish order block</span>
@@ -531,6 +571,12 @@
         <span><i class="swatch" style="background:var(--danger); opacity:0.6"></i> Fair value gap</span>
         <span><i class="swatch" style="background:#C9A227"></i> Liquidity pool (solid = resting, dotted = swept)</span>
         <span>Volume pane below chart &middot; "Vol ✓" = break on ≥1.4x avg volume</span>
+      </div>
+      <div class="legend" id="killZoneLegend">
+        <span><i class="swatch" style="background:rgba(124,92,252,0.35)"></i> Asian kill zone (00&ndash;04 UTC)</span>
+        <span><i class="swatch" style="background:rgba(53,198,198,0.35)"></i> London kill zone (07&ndash;10 UTC)</span>
+        <span><i class="swatch" style="background:rgba(240,180,41,0.35)"></i> New York kill zone (12&ndash;15 UTC)</span>
+        <span class="session-badge" id="sessionBadge">&mdash;</span>
       </div>
     </div>
     <div class="sidebar">
@@ -615,6 +661,7 @@
   let poolSeries = [];
   let rangeLines = []; // premium/discount price lines (removed via candleSeries.removePriceLine)
   let markers = [];
+  let currentCandles = []; // kept for re-drawing kill zones on pan/zoom/resize
 
   function clearOverlays(){
     obSeries.forEach(s => chart.removeSeries(s));
@@ -1028,6 +1075,77 @@
     })));
   }
 
+  // ---------- kill zones (trading sessions) ----------
+  // ICT-style kill zone windows in UTC hours. Approximate by design — traders should nudge
+  // these for their own broker/exchange server time, but this covers the standard convention.
+  const KILL_ZONES = [
+    { name:'Asian',     startH:0,  endH:4,  fill:'rgba(124,92,252,0.10)', border:'rgba(124,92,252,0.45)' },
+    { name:'London',    startH:7,  endH:10, fill:'rgba(53,198,198,0.10)', border:'rgba(53,198,198,0.45)' },
+    { name:'New York',  startH:12, endH:15, fill:'rgba(240,180,41,0.10)', border:'rgba(240,180,41,0.45)' }
+  ];
+
+  function renderKillZones(interval){
+    const overlay = document.getElementById('kzOverlay');
+    const legendRow = document.getElementById('killZoneLegend');
+    if(!overlay) return;
+    overlay.innerHTML = '';
+
+    // kill zones only make sense on intraday charts — one 1d candle spans all three sessions
+    if(interval === '1d' || interval === '1w'){
+      if(legendRow) legendRow.style.opacity = '0.35';
+      return;
+    }
+    if(legendRow) legendRow.style.opacity = '1';
+    if(!currentCandles.length) return;
+
+    const timeScale = chart.timeScale();
+    const range = timeScale.getVisibleRange();
+    if(!range) return;
+
+    const DAY = 86400;
+    const firstDay = Math.floor(range.from / DAY) * DAY - DAY;
+    for(let dayStart = firstDay; dayStart <= range.to; dayStart += DAY){
+      KILL_ZONES.forEach(z => {
+        const zStart = dayStart + z.startH * 3600;
+        const zEnd = dayStart + z.endH * 3600;
+        if(zEnd < range.from || zStart > range.to) return;
+        const x1 = timeScale.timeToCoordinate(Math.max(zStart, range.from));
+        const x2 = timeScale.timeToCoordinate(Math.min(zEnd, range.to));
+        if(x1 == null || x2 == null) return;
+        const left = Math.min(x1, x2);
+        const width = Math.max(1, Math.abs(x2 - x1));
+        const div = document.createElement('div');
+        div.className = 'kz-band';
+        div.style.left = left + 'px';
+        div.style.width = width + 'px';
+        div.style.background = z.fill;
+        div.style.borderLeft = '1px dashed ' + z.border;
+        div.style.borderRight = '1px dashed ' + z.border;
+        overlay.appendChild(div);
+      });
+    }
+  }
+
+  function updateSessionBadge(){
+    const badge = document.getElementById('sessionBadge');
+    if(!badge) return;
+    const h = new Date().getUTCHours();
+    const active = KILL_ZONES.filter(z => h >= z.startH && h < z.endH).map(z => z.name);
+    badge.innerHTML = active.length
+      ? `Now: <b>${active.join(' + ')} kill zone active</b>`
+      : `Now: <b>${String(h).padStart(2,'0')}:00 UTC</b> — outside kill zones`;
+  }
+
+  // redraw bands on pan/zoom and on container resize (band pixel positions depend on both)
+  chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+    renderKillZones(document.getElementById('intervalSelect').value);
+  });
+  new ResizeObserver(() => {
+    renderKillZones(document.getElementById('intervalSelect').value);
+  }).observe(document.querySelector('.chart-wrap'));
+  setInterval(updateSessionBadge, 60000);
+  updateSessionBadge();
+
   function renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range){
     clearOverlays();
     markers = [];
@@ -1186,6 +1304,8 @@
       renderRibbon(events);
       renderSignals(signals, symbol);
       chart.timeScale().fitContent();
+      currentCandles = candles;
+      renderKillZones(interval);
 
       const htfBadge = document.getElementById('htfBadge');
       if(htf.interval && htf.trend){
