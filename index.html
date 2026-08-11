@@ -350,6 +350,11 @@
   }
   .secondary-btn:hover{ background:rgba(53,198,198,0.08); filter:none; }
   .secondary-btn:disabled{ color:var(--text-dim); border-color:var(--line); cursor:not-allowed; }
+  .secondary-btn.active{
+    color:var(--long);
+    border-color:var(--long-dim);
+    background:rgba(240,180,41,0.08);
+  }
 
   /* ---------- BACKTEST MODAL ---------- */
   .modal-overlay{
@@ -499,6 +504,7 @@
       </select>
       <button id="loadBtn">Load</button>
       <button id="backtestBtn" class="secondary-btn" disabled>Backtest</button>
+      <button id="alertsBtn" class="secondary-btn">🔔 Alerts: Off</button>
     </div>
     <div class="price-tag">
       <div class="px" id="pxNow">&mdash;</div>
@@ -592,6 +598,10 @@
   let obSeries = [];   // order block price-line boxes (rendered as line series pairs)
   let lastRun = null;  // cached { candles, blocks, symbol } from the most recent run(), used by the backtest modal
   let btChartInstance = null;
+  let alertsEnabled = false;
+  let alertInterval = null;
+  let knownSignalKeys = new Set();
+  let audioCtx = null;
   let fvgSeries = [];
   let poolSeries = [];
   let rangeLines = []; // premium/discount price lines (removed via candleSeries.removePriceLine)
@@ -941,6 +951,33 @@
     return signals.slice(0, 12);
   }
 
+  // ---------- alerts ----------
+  function playAlertBeep(){
+    try{
+      if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      osc.frequency.setValueAtTime(1175, audioCtx.currentTime + 0.09);
+      gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.22);
+    }catch(e){ /* audio not available, fail silently */ }
+  }
+
+  function notifyNewSignal(s, symbol){
+    const title = `${symbol} · ${s.dir === 'up' ? 'LONG' : 'SHORT'} setup`;
+    const body = `${s.basis} — entry ${s.entry.toFixed(4)}, R:R ≈ ${s.rr}`;
+    if('Notification' in window && Notification.permission === 'granted'){
+      try{ new Notification(title, { body, tag: title }); }catch(e){}
+    }
+    playAlertBeep();
+  }
+
   // ---------- rendering ----------
   function renderChart(candles){
     candleSeries.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
@@ -1073,14 +1110,15 @@
   }
 
   // ---------- orchestration ----------
-  async function run(){
+  async function run(opts){
+    const silent = opts && opts.silent;
     const btn = document.getElementById('loadBtn');
     const symbolSelect = document.getElementById('symbolSelect');
     const customSymbol = document.getElementById('customSymbol');
     const interval = document.getElementById('intervalSelect').value;
     const symbol = (customSymbol.value.trim() || symbolSelect.value).toUpperCase();
 
-    btn.disabled = true; btn.textContent = 'Loading…';
+    if(!silent){ btn.disabled = true; btn.textContent = 'Loading…'; }
     document.getElementById('htfBadge').textContent = '…'; document.getElementById('htfBadge').className = 'htf-badge';
     try{
       const [candles, htf] = await Promise.all([
@@ -1125,10 +1163,22 @@
 
       lastRun = { candles, blocks, symbol, interval };
       document.getElementById('backtestBtn').disabled = false;
+
+      // diff against the previous signal set to fire alerts only for genuinely new setups
+      if(alertsEnabled){
+        const currentKeys = new Set(signals.map(s => `${symbol}_${s.dir}_${s.blockIndex}_${s.eventIndex}`));
+        if(knownSignalKeys.size > 0){
+          signals.forEach(s => {
+            const key = `${symbol}_${s.dir}_${s.blockIndex}_${s.eventIndex}`;
+            if(!knownSignalKeys.has(key)) notifyNewSignal(s, symbol);
+          });
+        }
+        knownSignalKeys = currentKeys;
+      }
     }catch(err){
       document.getElementById('signalFeed').innerHTML = `<div class="empty-state">Could not load data: ${err.message}. Check the symbol is a valid Binance pair.</div>`;
     }finally{
-      btn.disabled = false; btn.textContent = 'Load';
+      if(!silent){ btn.disabled = false; btn.textContent = 'Load'; }
     }
   }
 
@@ -1218,6 +1268,26 @@
   document.getElementById('closeBacktest').addEventListener('click', closeBacktest);
   document.getElementById('backtestOverlay').addEventListener('click', (e) => {
     if(e.target.id === 'backtestOverlay') closeBacktest();
+  });
+
+  document.getElementById('alertsBtn').addEventListener('click', async () => {
+    const alertsBtn = document.getElementById('alertsBtn');
+    if(!alertsEnabled){
+      if('Notification' in window && Notification.permission === 'default'){
+        await Notification.requestPermission();
+      }
+      alertsEnabled = true;
+      knownSignalKeys = new Set(); // reset baseline so the first tick doesn't fire on already-known signals
+      alertsBtn.textContent = '🔔 Alerts: On (45s)';
+      alertsBtn.classList.add('active');
+      alertInterval = setInterval(() => run({ silent:true }), 45000);
+      run({ silent:true }); // establish the baseline immediately
+    } else {
+      alertsEnabled = false;
+      clearInterval(alertInterval); alertInterval = null;
+      alertsBtn.textContent = '🔔 Alerts: Off';
+      alertsBtn.classList.remove('active');
+    }
   });
 })();
 </script>
