@@ -276,6 +276,12 @@
     letter-spacing:0.03em;
     vertical-align:middle;
   }
+  .badge.zone{
+    color:var(--structure);
+    background:rgba(53,198,198,0.12);
+    border-color:rgba(53,198,198,0.4);
+    text-transform:uppercase;
+  }
   .signal-card .basis{
     font-size:10px;
     color:var(--text-dim);
@@ -433,13 +439,15 @@
   let obSeries = [];   // order block price-line boxes (rendered as line series pairs)
   let fvgSeries = [];
   let poolSeries = [];
+  let rangeLines = []; // premium/discount price lines (removed via candleSeries.removePriceLine)
   let markers = [];
 
   function clearOverlays(){
     obSeries.forEach(s => chart.removeSeries(s));
     fvgSeries.forEach(s => chart.removeSeries(s));
     poolSeries.forEach(s => chart.removeSeries(s));
-    obSeries = []; fvgSeries = []; poolSeries = [];
+    rangeLines.forEach(l => candleSeries.removePriceLine(l));
+    obSeries = []; fvgSeries = []; poolSeries = []; rangeLines = [];
   }
 
   // ---------- data fetch ----------
@@ -489,6 +497,18 @@
       }
     }
     return zz;
+  }
+
+  // 1c. Current dealing range from the last few zigzag pivots -> equilibrium (50%),
+  //     premium (upper half, sell-favored) and discount (lower half, buy-favored) zones.
+  function computeDealingRange(zigzag, lookback){
+    lookback = lookback || 6;
+    const recent = zigzag.slice(-lookback);
+    if(recent.length < 2) return null;
+    const prices = recent.map(p => p.price);
+    const high = Math.max(...prices);
+    const low = Math.min(...prices);
+    return { high, low, eq: (high + low) / 2 };
   }
 
   // 2. Walk swings to build structure events: BOS (trend continuation break) and CHoCH (trend reversal break)
@@ -634,9 +654,11 @@
   }
 
   // 6. Signal generation: unmitigated order block aligned with the prevailing structure event,
-  //    extra confidence if an unmitigated FVG overlaps the same zone, and higher confidence
-  //    still if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal).
-  function generateSignals(candles, events, blocks, fvgs, pools){
+  //    extra confidence if an unmitigated FVG overlaps the same zone, higher confidence still
+  //    if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal),
+  //    and a further bonus if the entry sits on the "correct" side of equilibrium
+  //    (buying in discount, selling in premium — the classic SMC dealing-range rule).
+  function generateSignals(candles, events, blocks, fvgs, pools, range){
     const signals = [];
     const lastEventByDir = {};
     events.forEach(ev => { lastEventByDir[ev.dir] = ev; });
@@ -655,16 +677,21 @@
       const entry = b.dir === 'up' ? b.top : b.bottom;
       const stop = b.dir === 'up' ? b.bottom * 0.998 : b.top * 1.002;
       const risk = Math.abs(entry - stop);
+
+      const inGoodZone = range && (b.dir === 'up' ? entry < range.eq : entry > range.eq);
+
       let mult = 2;
       if(confluentFVG) mult += 1;
       if(confluentSweep) mult += 1;
+      if(inGoodZone) mult += 0.5;
       const target = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
 
       const basisParts = [b.kind];
       basisParts.push(confluentSweep ? 'liquidity sweep' : null);
       basisParts.push(confluentFVG ? 'FVG confluence' : null);
+      basisParts.push(inGoodZone ? (b.dir === 'up' ? 'discount entry' : 'premium entry') : null);
       const tags = basisParts.filter(Boolean);
-      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0);
+      const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0);
 
       signals.push({
         dir: b.dir,
@@ -675,11 +702,12 @@
         eventIndex: b.eventIndex,
         recency: candles.length - b.eventIndex,
         score,
-        hasSweep: !!confluentSweep
+        hasSweep: !!confluentSweep,
+        inGoodZone: !!inGoodZone
       });
     });
 
-    // highest-confidence (sweep + FVG confluence) first, then most recent
+    // highest-confidence (sweep + FVG + zone confluence) first, then most recent
     signals.sort((a,b) => (b.score - a.score) || (a.recency - b.recency));
     return signals.slice(0, 12);
   }
@@ -689,9 +717,27 @@
     candleSeries.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
   }
 
-  function renderOverlays(candles, blocks, events, fvgs, pools, zigzag){
+  function renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range){
     clearOverlays();
     markers = [];
+
+    // premium / discount dealing range: three horizontal reference lines spanning the
+    // whole visible chart, drawn first so everything else sits on top
+    if(range){
+      const eqLine = candleSeries.createPriceLine({
+        price: range.eq, color: COLORS.structure, lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'Equilibrium 50%'
+      });
+      const hiLine = candleSeries.createPriceLine({
+        price: range.high, color: COLORS.down, lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: 'Premium'
+      });
+      const loLine = candleSeries.createPriceLine({
+        price: range.low, color: COLORS.up, lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: 'Discount'
+      });
+      rangeLines.push(eqLine, hiLine, loLine);
+    }
 
     // structure zigzag: the connecting line through swing pivots, same idea as the
     // hand-drawn reference diagram (peak-to-trough-to-peak), drawn under everything else
@@ -783,7 +829,7 @@
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
         <div class="row1">
-          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}</div>
+          <div class="kind">${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}</div>
           <div class="basis">${s.basis}</div>
         </div>
         <div class="grid">
@@ -810,14 +856,15 @@
       const candles = await fetchKlines(symbol, interval, 500);
       const swings = findSwings(candles);
       const zigzag = buildZigzag(swings);
+      const range = computeDealingRange(zigzag);
       const events = buildStructure(candles, swings);
       const blocks = findOrderBlocks(candles, events);
       const fvgs = findFVGs(candles);
       const pools = findLiquidityPools(candles, swings);
-      const signals = generateSignals(candles, events, blocks, fvgs, pools);
+      const signals = generateSignals(candles, events, blocks, fvgs, pools, range);
 
       renderChart(candles);
-      renderOverlays(candles, blocks, events, fvgs, pools, zigzag);
+      renderOverlays(candles, blocks, events, fvgs, pools, zigzag, range);
       renderRibbon(events);
       renderSignals(signals, symbol);
       chart.timeScale().fitContent();
