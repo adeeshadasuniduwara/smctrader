@@ -342,6 +342,124 @@
     justify-content:space-between;
   }
 
+  /* ---------- SECONDARY BUTTON ---------- */
+  .secondary-btn{
+    background:transparent;
+    color:var(--structure);
+    border:1px solid var(--structure-dim);
+  }
+  .secondary-btn:hover{ background:rgba(53,198,198,0.08); filter:none; }
+  .secondary-btn:disabled{ color:var(--text-dim); border-color:var(--line); cursor:not-allowed; }
+
+  /* ---------- BACKTEST MODAL ---------- */
+  .modal-overlay{
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(5,6,8,0.72);
+    z-index:50;
+    align-items:flex-start;
+    justify-content:center;
+    padding:40px 20px;
+    overflow-y:auto;
+  }
+  .modal-overlay.open{ display:flex; }
+  .modal-panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:8px;
+    width:100%;
+    max-width:760px;
+    padding:24px 26px;
+  }
+  .modal-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:4px;
+  }
+  .modal-head h2{
+    font-family:'Space Grotesk', sans-serif;
+    font-size:18px;
+    font-weight:600;
+  }
+  .modal-head h2 span{ color:var(--structure); }
+  .close-btn{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--text-dim);
+    font-size:13px;
+    padding:6px 10px;
+    border-radius:3px;
+  }
+  .modal-sub{
+    font-size:11px;
+    color:var(--text-dim);
+    line-height:1.6;
+    margin-bottom:18px;
+  }
+  .bt-stats{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));
+    gap:10px;
+    margin-bottom:18px;
+  }
+  .bt-stat{
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:12px;
+  }
+  .bt-stat .lbl{
+    font-size:9px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--text-dim);
+    margin-bottom:6px;
+  }
+  .bt-stat .val{
+    font-family:'Space Grotesk', sans-serif;
+    font-size:19px;
+    font-weight:700;
+  }
+  .bt-stat .val.up{ color:var(--long); }
+  .bt-stat .val.down{ color:var(--short); }
+  .bt-chart{
+    height:180px;
+    margin-bottom:18px;
+    border:1px solid var(--line);
+    border-radius:4px;
+  }
+  .bt-table-wrap{
+    max-height:260px;
+    overflow-y:auto;
+    border:1px solid var(--line);
+    border-radius:4px;
+  }
+  .bt-table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:11px;
+  }
+  .bt-table th{
+    position:sticky; top:0;
+    background:var(--panel-raised);
+    text-align:left;
+    padding:8px 10px;
+    font-size:9px;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--text-dim);
+    border-bottom:1px solid var(--line);
+  }
+  .bt-table td{
+    padding:7px 10px;
+    border-bottom:1px solid var(--line);
+  }
+  .bt-table tr:last-child td{ border-bottom:none; }
+  .bt-table .win{ color:var(--long); }
+  .bt-table .loss{ color:var(--short); }
+
   @media (max-width: 860px){
     main{ flex-direction:column; }
     .sidebar{ width:100%; max-height:420px; border-top:1px solid var(--line); }
@@ -380,6 +498,7 @@
         <option value="1d">1d</option>
       </select>
       <button id="loadBtn">Load</button>
+      <button id="backtestBtn" class="secondary-btn" disabled>Backtest</button>
     </div>
     <div class="price-tag">
       <div class="px" id="pxNow">&mdash;</div>
@@ -422,6 +541,21 @@
     <span>Data: Binance public REST API (klines) &middot; client-side only, no key required</span>
     <span id="lastUpdated">&mdash;</span>
   </footer>
+
+  <div class="modal-overlay" id="backtestOverlay">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h2>Backtest &mdash; <span id="btSymbolLabel">&mdash;</span></h2>
+        <button class="close-btn" id="closeBacktest">✕</button>
+      </div>
+      <p class="modal-sub">Simulates every historical order-block retest in the loaded 500-candle window: entry at the block edge, fixed 2R target, stop beyond the block. Past structure, not a guarantee of future setups.</p>
+      <div class="bt-stats" id="btStats"></div>
+      <div id="btChart" class="bt-chart"></div>
+      <div class="bt-table-wrap">
+        <table class="bt-table" id="btTable"></table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -456,6 +590,8 @@
   });
 
   let obSeries = [];   // order block price-line boxes (rendered as line series pairs)
+  let lastRun = null;  // cached { candles, blocks, symbol } from the most recent run(), used by the backtest modal
+  let btChartInstance = null;
   let fvgSeries = [];
   let poolSeries = [];
   let rangeLines = []; // premium/discount price lines (removed via candleSeries.removePriceLine)
@@ -691,7 +827,56 @@
     return pools;
   }
 
-  // 6. Signal generation: unmitigated order block aligned with the prevailing structure event,
+  // 6. Backtest engine: every order block that was later retested (b.mitigatedAt) is treated
+  //    as a triggered entry. Fixed 2R target, stop beyond the block, walked forward candle by
+  //    candle to see whichever level was hit first. This intentionally ignores the live
+  //    confluence bonuses (sweep/FVG/HTF/zone) so it reflects the raw, unweighted edge of
+  //    "trade every retested order block" as a baseline.
+  function runBacktest(candles, blocks){
+    const trades = [];
+    blocks.forEach(b => {
+      if(b.mitigatedAt == null) return; // never retested -> no entry ever triggered
+      const entry = b.dir === 'up' ? b.top : b.bottom;
+      const stop = b.dir === 'up' ? b.bottom * 0.998 : b.top * 1.002;
+      const risk = Math.abs(entry - stop);
+      if(risk <= 0 || !isFinite(risk)) return;
+      const target = b.dir === 'up' ? entry + risk * 2 : entry - risk * 2;
+
+      let outcome = null, exitIndex = null;
+      for(let k = b.mitigatedAt; k < candles.length; k++){
+        const c = candles[k];
+        if(b.dir === 'up'){
+          if(c.low <= stop){ outcome = 'loss'; exitIndex = k; break; }
+          if(c.high >= target){ outcome = 'win'; exitIndex = k; break; }
+        } else {
+          if(c.high >= stop){ outcome = 'loss'; exitIndex = k; break; }
+          if(c.low <= target){ outcome = 'win'; exitIndex = k; break; }
+        }
+      }
+      if(outcome){
+        trades.push({
+          dir: b.dir, kind: b.kind, entry, stop, target,
+          entryIndex: b.mitigatedAt, exitIndex,
+          outcome, r: outcome === 'win' ? 2 : -1
+        });
+      }
+    });
+
+    trades.sort((a,b) => a.entryIndex - b.entryIndex);
+
+    const wins = trades.filter(t => t.outcome === 'win').length;
+    const losses = trades.filter(t => t.outcome === 'loss').length;
+    const winRate = trades.length ? (wins / trades.length * 100) : 0;
+    const totalR = trades.reduce((s,t) => s + t.r, 0);
+    const avgR = trades.length ? totalR / trades.length : 0;
+
+    let cum = 0;
+    const equity = trades.map(t => { cum += t.r; return { time: candles[t.exitIndex].time, value: cum }; });
+
+    return { trades, wins, losses, winRate, totalR, avgR, equity };
+  }
+
+  // 7. Signal generation: unmitigated order block aligned with the prevailing structure event,
   //    extra confidence if an unmitigated FVG overlaps the same zone, higher confidence still
   //    if a liquidity sweep on the opposite side preceded the break (stop-hunt + reversal),
   //    a bonus if the entry sits on the "correct" side of equilibrium (buying in discount,
@@ -937,6 +1122,9 @@
       chgEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
       chgEl.className = 'chg ' + (chg >= 0 ? 'up' : 'down');
       document.getElementById('lastUpdated').textContent = symbol + ' · ' + interval + ' · updated ' + new Date().toLocaleTimeString();
+
+      lastRun = { candles, blocks, symbol, interval };
+      document.getElementById('backtestBtn').disabled = false;
     }catch(err){
       document.getElementById('signalFeed').innerHTML = `<div class="empty-state">Could not load data: ${err.message}. Check the symbol is a valid Binance pair.</div>`;
     }finally{
@@ -948,6 +1136,89 @@
   document.getElementById('intervalSelect').addEventListener('change', run);
   document.getElementById('symbolSelect').addEventListener('change', () => { document.getElementById('customSymbol').value=''; run(); });
   window.addEventListener('DOMContentLoaded', run);
+
+  // ---------- backtest modal ----------
+  function renderBacktestStats(result){
+    const el = document.getElementById('btStats');
+    const winClass = result.winRate >= 50 ? 'up' : 'down';
+    const rClass = result.totalR >= 0 ? 'up' : 'down';
+    el.innerHTML = `
+      <div class="bt-stat"><div class="lbl">Trades</div><div class="val">${result.trades.length}</div></div>
+      <div class="bt-stat"><div class="lbl">Win rate</div><div class="val ${winClass}">${result.winRate.toFixed(1)}%</div></div>
+      <div class="bt-stat"><div class="lbl">Wins / Losses</div><div class="val">${result.wins} / ${result.losses}</div></div>
+      <div class="bt-stat"><div class="lbl">Avg R per trade</div><div class="val ${result.avgR >= 0 ? 'up':'down'}">${result.avgR.toFixed(2)}R</div></div>
+      <div class="bt-stat"><div class="lbl">Net R (sum)</div><div class="val ${rClass}">${result.totalR >= 0 ? '+' : ''}${result.totalR.toFixed(1)}R</div></div>
+    `;
+  }
+
+  function renderBacktestChart(result){
+    if(btChartInstance){ btChartInstance.remove(); btChartInstance = null; }
+    const container = document.getElementById('btChart');
+    if(result.equity.length < 2){
+      container.innerHTML = '<div class="empty-state" style="padding:60px 10px;">Not enough completed trades in this window to plot an equity curve.</div>';
+      return;
+    }
+    container.innerHTML = '';
+    btChartInstance = LightweightCharts.createChart(container, {
+      layout:{ background:{ color:'#12151B' }, textColor:'#8A8F9B', fontFamily:"'JetBrains Mono', monospace" },
+      grid:{ vertLines:{ color:'#1E232B' }, horzLines:{ color:'#1E232B' } },
+      rightPriceScale:{ borderColor:'#1E232B' },
+      timeScale:{ borderColor:'#1E232B', timeVisible:true },
+      autoSize:true
+    });
+    const line = btChartInstance.addLineSeries({
+      color: result.totalR >= 0 ? COLORS.up : COLORS.down,
+      lineWidth: 2
+    });
+    line.setData(result.equity);
+  }
+
+  function renderBacktestTable(result, candles){
+    const table = document.getElementById('btTable');
+    if(result.trades.length === 0){
+      table.innerHTML = '';
+      return;
+    }
+    const rows = result.trades.slice().reverse().slice(0, 60).map(t => {
+      const date = new Date(candles[t.entryIndex].time * 1000).toLocaleDateString();
+      return `<tr>
+        <td>${date}</td>
+        <td>${t.dir === 'up' ? 'LONG' : 'SHORT'}</td>
+        <td>${t.kind}</td>
+        <td>${t.entry.toFixed(4)}</td>
+        <td class="${t.outcome === 'win' ? 'win' : 'loss'}">${t.outcome === 'win' ? 'WIN' : 'LOSS'}</td>
+        <td class="${t.outcome === 'win' ? 'win' : 'loss'}">${t.r > 0 ? '+' : ''}${t.r}R</td>
+      </tr>`;
+    }).join('');
+    table.innerHTML = `
+      <thead><tr><th>Date</th><th>Dir</th><th>Basis</th><th>Entry</th><th>Result</th><th>R</th></tr></thead>
+      <tbody>${rows}</tbody>
+    `;
+  }
+
+  function openBacktest(){
+    if(!lastRun) return;
+    const result = runBacktest(lastRun.candles, lastRun.blocks);
+    document.getElementById('btSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval}`;
+    renderBacktestStats(result);
+    document.getElementById('backtestOverlay').classList.add('open');
+    // chart needs a visible, sized container before init — render on next frame
+    requestAnimationFrame(() => {
+      renderBacktestChart(result);
+      renderBacktestTable(result, lastRun.candles);
+    });
+  }
+
+  function closeBacktest(){
+    document.getElementById('backtestOverlay').classList.remove('open');
+    if(btChartInstance){ btChartInstance.remove(); btChartInstance = null; }
+  }
+
+  document.getElementById('backtestBtn').addEventListener('click', openBacktest);
+  document.getElementById('closeBacktest').addEventListener('click', closeBacktest);
+  document.getElementById('backtestOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'backtestOverlay') closeBacktest();
+  });
 })();
 </script>
 </body>
