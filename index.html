@@ -374,6 +374,7 @@
     <div class="chart-col">
       <div id="chart"></div>
       <div class="legend">
+        <span><i class="swatch" style="background:#3A4250"></i> Structure zigzag (swing pivots)</span>
         <span><i class="swatch" style="background:var(--long)"></i> Bullish order block</span>
         <span><i class="swatch" style="background:var(--short)"></i> Bearish order block</span>
         <span><i class="swatch" style="background:var(--structure)"></i> BOS / CHoCH line</span>
@@ -473,6 +474,23 @@
     return swings;
   }
 
+  // 1b. Collapse raw fractal swings into a proper alternating zigzag (like the reference
+  //     diagram): consecutive same-side swings collapse to whichever is more extreme.
+  function buildZigzag(swings){
+    const zz = [];
+    for(const s of swings){
+      if(zz.length === 0){ zz.push(s); continue; }
+      const last = zz[zz.length-1];
+      if(s.type === last.type){
+        if(s.type === 'high' && s.price > last.price) zz[zz.length-1] = s;
+        if(s.type === 'low' && s.price < last.price) zz[zz.length-1] = s;
+      } else {
+        zz.push(s);
+      }
+    }
+    return zz;
+  }
+
   // 2. Walk swings to build structure events: BOS (trend continuation break) and CHoCH (trend reversal break)
   function buildStructure(candles, swings){
     const events = []; // {i, price, kind:'BOS'|'CHoCH', dir:'up'|'down'}
@@ -496,13 +514,13 @@
 
       if(activeHigh && close > activeHigh.price && activeHigh.i < i && !activeHigh.broken){
         const kind = (trend === 'down') ? 'CHoCH' : 'BOS';
-        events.push({ i, price:activeHigh.price, kind, dir:'up' });
+        events.push({ i, pivotI:activeHigh.i, price:activeHigh.price, kind, dir:'up' });
         activeHigh.broken = true;
         trend = 'up';
       }
       if(activeLow && close < activeLow.price && activeLow.i < i && !activeLow.broken){
         const kind = (trend === 'up') ? 'CHoCH' : 'BOS';
-        events.push({ i, price:activeLow.price, kind, dir:'down' });
+        events.push({ i, pivotI:activeLow.i, price:activeLow.price, kind, dir:'down' });
         activeLow.broken = true;
         trend = 'down';
       }
@@ -671,9 +689,23 @@
     candleSeries.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
   }
 
-  function renderOverlays(candles, blocks, events, fvgs, pools){
+  function renderOverlays(candles, blocks, events, fvgs, pools, zigzag){
     clearOverlays();
     markers = [];
+
+    // structure zigzag: the connecting line through swing pivots, same idea as the
+    // hand-drawn reference diagram (peak-to-trough-to-peak), drawn under everything else
+    if(zigzag && zigzag.length > 1){
+      const zzLine = chart.addLineSeries({
+        color: '#3A4250',
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        lastValueVisible: false,
+        priceLineVisible: false
+      });
+      zzLine.setData(zigzag.map(p => ({ time: candles[p.i].time, value: p.price })));
+      obSeries.push(zzLine); // reuse obSeries bucket for cleanup
+    }
 
     // liquidity pools: unswept pools drawn solid (still resting), swept pools drawn faint (already grabbed)
     pools.slice(-16).forEach(p => {
@@ -708,13 +740,14 @@
       fvgSeries.push(line);
     });
 
-    // structure break markers
+    // structure break labels: placed at the swing pivot itself (the peak/trough that got
+    // broken), same convention as the reference diagram, rather than on the breaking candle
     events.slice(-25).forEach(ev => {
       markers.push({
-        time: candles[ev.i].time,
-        position: ev.dir === 'up' ? 'belowBar' : 'aboveBar',
+        time: candles[ev.pivotI].time,
+        position: ev.dir === 'up' ? 'aboveBar' : 'belowBar',
         color: ev.kind === 'CHoCH' ? COLORS.structure : (ev.dir === 'up' ? COLORS.up : COLORS.down),
-        shape: ev.dir === 'up' ? 'arrowUp' : 'arrowDown',
+        shape: 'circle',
         text: ev.kind
       });
     });
@@ -776,6 +809,7 @@
     try{
       const candles = await fetchKlines(symbol, interval, 500);
       const swings = findSwings(candles);
+      const zigzag = buildZigzag(swings);
       const events = buildStructure(candles, swings);
       const blocks = findOrderBlocks(candles, events);
       const fvgs = findFVGs(candles);
@@ -783,7 +817,7 @@
       const signals = generateSignals(candles, events, blocks, fvgs, pools);
 
       renderChart(candles);
-      renderOverlays(candles, blocks, events, fvgs, pools);
+      renderOverlays(candles, blocks, events, fvgs, pools, zigzag);
       renderRibbon(events);
       renderSignals(signals, symbol);
       chart.timeScale().fitContent();
