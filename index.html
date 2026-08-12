@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Ledger &mdash; Smart Money Structure Terminal</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0A0C10">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -218,6 +221,76 @@
   }
   .insight-block{ display:flex; flex-direction:column; gap:6px; }
   .insight-block.grow{ flex:1; min-width:220px; }
+  .replay-bar{
+    display:none;
+    align-items:center;
+    gap:10px;
+    padding:10px 28px;
+    border-bottom:1px solid var(--line);
+    background:var(--panel);
+  }
+  .replay-bar.active{ display:flex; }
+  .replay-bar select{
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:'JetBrains Mono', monospace;
+    font-size:11px;
+    padding:5px 8px;
+    border-radius:3px;
+  }
+  .theme-editor-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:14px;
+  }
+  .theme-editor-grid label{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    font-size:10px;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--text-dim);
+  }
+  .theme-editor-grid input[type=color]{
+    width:100%;
+    height:34px;
+    border:1px solid var(--line);
+    border-radius:4px;
+    background:var(--panel-raised);
+    padding:2px;
+    cursor:pointer;
+  }
+  .split-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    grid-template-rows:1fr 1fr;
+    gap:10px;
+    height:60vh;
+  }
+  .split-panel{
+    border:1px solid var(--line);
+    border-radius:4px;
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
+  .split-panel-head{
+    padding:6px 8px;
+    border-bottom:1px solid var(--line);
+  }
+  .split-panel-head select{
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:'JetBrains Mono', monospace;
+    font-size:11px;
+    padding:4px 6px;
+    border-radius:3px;
+    width:100%;
+  }
+  .split-panel-chart{ flex:1; min-height:0; }
   .insight-label{
     font-size:9px;
     text-transform:uppercase;
@@ -757,6 +830,13 @@
       <button id="journalBtn" class="secondary-btn">Journal</button>
       <button id="calcBtn" class="secondary-btn">Calc</button>
       <button id="themeBtn" class="secondary-btn" title="Toggle light/dark theme">🌓</button>
+      <button id="themeEditorBtn" class="secondary-btn" title="Custom color theme">🎨</button>
+      <select id="exchangeSelect" title="Data source for the main chart">
+        <option value="binance">Binance</option>
+        <option value="bybit">Bybit</option>
+      </select>
+      <button id="replayBtn" class="secondary-btn">Replay</button>
+      <button id="splitViewBtn" class="secondary-btn">Split View</button>
       <button id="screenshotBtn" class="secondary-btn" title="Export chart as PNG">📷</button>
     </div>
     <div class="price-tag">
@@ -824,6 +904,20 @@
     <div class="insight-block">
       <button id="watchlistBtn" class="secondary-btn">Watchlist</button>
     </div>
+  </div>
+
+  <div class="replay-bar" id="replayBar">
+    <button id="replayStepBackBtn" class="mini-btn">⏮</button>
+    <button id="replayPlayBtn" class="mini-btn">⏵ Play</button>
+    <button id="replayStepFwdBtn" class="mini-btn">⏭</button>
+    <select id="replaySpeedSelect">
+      <option value="1200">0.5x</option>
+      <option value="600" selected>1x</option>
+      <option value="300">2x</option>
+      <option value="120">4x</option>
+    </select>
+    <span id="replayProgress" style="font-size:11px; color:var(--text-dim);">&mdash;</span>
+    <button id="replayExitBtn" class="mini-btn" style="margin-left:auto; background:var(--panel-raised); color:var(--text-dim);">Exit replay</button>
   </div>
 
   <main>
@@ -951,6 +1045,44 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="themeEditorOverlay">
+    <div class="modal-panel" style="max-width:420px;">
+      <div class="modal-head">
+        <h2>Custom Theme</h2>
+        <button class="close-btn" id="closeThemeEditor">✕</button>
+      </div>
+      <p class="modal-sub">Pick your own palette. Applies live and is saved in this browser.</p>
+      <div class="theme-editor-grid">
+        <label>Background<input type="color" id="themeInk" value="#0A0C10" /></label>
+        <label>Panel<input type="color" id="themePanel" value="#12151B" /></label>
+        <label>Text<input type="color" id="themeText" value="#E8E6DF" /></label>
+        <label>Long / Bullish<input type="color" id="themeLong" value="#F0B429" /></label>
+        <label>Short / Bearish<input type="color" id="themeShort" value="#7C5CFC" /></label>
+        <label>Structure / accent<input type="color" id="themeStructure" value="#35C6C6" /></label>
+      </div>
+      <div style="display:flex; gap:10px; margin-top:16px;">
+        <button id="applyCustomThemeBtn" class="secondary-btn">Apply &amp; save</button>
+        <button id="resetThemeBtn" class="secondary-btn">Reset to default</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="splitViewOverlay">
+    <div class="modal-panel" style="max-width:1000px;">
+      <div class="modal-head">
+        <h2>Split View</h2>
+        <button class="close-btn" id="closeSplitView">✕</button>
+      </div>
+      <p class="modal-sub">Quick side-by-side candle comparison across pairs on the current timeframe. Basic candles only — no SMC overlays here, use the main chart for full analysis.</p>
+      <div style="display:flex; gap:10px; margin-bottom:14px;">
+        <label style="font-size:10px; color:var(--text-dim);">Layout
+          <select id="splitLayoutSelect"><option value="2">2 panels</option><option value="4" selected>4 panels</option></select>
+        </label>
+      </div>
+      <div class="split-grid" id="splitGrid"></div>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="alertSettingsOverlay">
     <div class="modal-panel" style="max-width:460px;">
       <div class="modal-head">
@@ -1074,10 +1206,9 @@
         <li>Wyckoff phase detection (subjective pattern, low automatic-detection value)</li>
         <li>Crypto news feed, economic calendar, DXY overlay, exchange net-flow — all need a paid/keyed data API</li>
         <li>Whale trade alerts — needs a persistent WebSocket stream, not a REST poll</li>
-        <li>Full order book depth heatmap (built: simple bid/ask imbalance %), replay mode, multi-chart split view, custom theme editor — each a sizable UI build on its own</li>
-        <li>Strategy preset comparison (different confluence weight combos)</li>
-        <li>PWA install support, multi-exchange (Bybit/OKX) toggle</li>
+        <li>Full order book depth heatmap (built: simple bid/ask imbalance %)</li>
         <li>Inducement / Turtle Soup / Judas Swing / Power of Three / PD Array ranking — refinements on top of today's liquidity-sweep logic</li>
+        <li>OKX as a second alternate exchange (Bybit is now supported)</li>
       </ul>
     </div>
   </div>
@@ -1129,6 +1260,14 @@
   let drawings = loadJSON('ledger_drawings', []); // [{id, type, symbol, interval, p1:{time,price}, p2:{time,price}, text}]
   let activeTool = 'cursor';
   let pendingPoint = null;
+
+  // ---------- replay mode state ----------
+  let replayActive = false;
+  let replayIndex = 0;
+  let replayTimer = null;
+
+  // ---------- split view state ----------
+  let splitCharts = [];
   let lastRun = null;  // cached { candles, blocks, symbol } from the most recent run(), used by the backtest modal
   let btChartInstance = null;
   let alertsEnabled = false;
@@ -1184,6 +1323,36 @@
       close: parseFloat(k[4]),
       volume: parseFloat(k[5])
     }));
+  }
+
+  // ---------- multi-exchange: Bybit as an alternate data source for the main chart ----------
+  const BYBIT_INTERVAL_MAP = {
+    '1m':'1', '3m':'3', '5m':'5', '15m':'15', '30m':'30',
+    '1h':'60', '2h':'120', '4h':'240', '6h':'360', '8h':'360', '12h':'720',
+    '1d':'D', '3d':'D', '1w':'W', '1M':'M'
+  };
+
+  async function fetchKlinesBybit(symbol, interval, limit){
+    const biInterval = BYBIT_INTERVAL_MAP[interval] || '60';
+    const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${biInterval}&limit=${limit}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Bybit API error: ' + res.status);
+    const data = await res.json();
+    const list = (data.result && data.result.list) || [];
+    if(!list.length) throw new Error('Bybit returned no data for this pair');
+    return list.map(k => ({
+      time: Math.floor(parseInt(k[0], 10) / 1000),
+      open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]),
+      close: parseFloat(k[4]), volume: parseFloat(k[5])
+    })).sort((a,b) => a.time - b.time);
+  }
+
+  // only the main chart's primary candle series respects the exchange toggle — HTF, screener,
+  // batch backtest, correlation checker, BTC overlay, and sentiment/market-pulse data all stay
+  // on Binance, since those endpoints (futures funding, F&G, dominance) only exist there anyway
+  async function fetchMainKlines(symbol, interval, limit){
+    const exchange = document.getElementById('exchangeSelect').value;
+    return exchange === 'bybit' ? fetchKlinesBybit(symbol, interval, limit) : fetchKlines(symbol, interval, limit);
   }
 
   // maps the chart's timeframe to the next timeframe up, used for HTF bias confirmation
@@ -2261,7 +2430,7 @@
     try{
       const wantBtcOverlay = document.getElementById('btcOverlayToggle').checked && symbol !== 'BTCUSDT';
       const [candles, htf, sentiment, fng, btcDom, lsRatio, obImbalance, btcCandles] = await Promise.all([
-        fetchKlines(symbol, interval, 500),
+        fetchMainKlines(symbol, interval, 500),
         fetchHTFTrend(symbol, interval),
         fetchSentiment(symbol),
         fetchFearGreed(),
@@ -2420,6 +2589,7 @@
   document.getElementById('intervalSelect').addEventListener('change', run);
   document.getElementById('symbolSelect').addEventListener('change', () => { document.getElementById('customSymbol').value=''; run(); });
   document.getElementById('btcOverlayToggle').addEventListener('change', () => run({ silent:true }));
+  document.getElementById('exchangeSelect').addEventListener('change', () => run());
   window.addEventListener('DOMContentLoaded', run);
 
   // ---------- backtest modal ----------
@@ -3267,6 +3437,214 @@
   document.getElementById('presetAll').addEventListener('click', () => setPreset(0, 'presetAll'));
   document.getElementById('presetConservative').addEventListener('click', () => setPreset(6, 'presetConservative'));
   document.getElementById('presetAggressive').addEventListener('click', () => setPreset(2, 'presetAggressive'));
+
+  // ---------- custom theme editor ----------
+  function applyCustomTheme(colors, save){
+    const root = document.documentElement;
+    root.style.setProperty('--ink', colors.ink);
+    root.style.setProperty('--panel', colors.panel);
+    root.style.setProperty('--panel-raised', colors.panel);
+    root.style.setProperty('--text', colors.text);
+    root.style.setProperty('--long', colors.long);
+    root.style.setProperty('--short', colors.short);
+    root.style.setProperty('--structure', colors.structure);
+    COLORS.up = colors.long; COLORS.down = colors.short; COLORS.structure = colors.structure;
+    chart.applyOptions({
+      layout:{ background:{ color:colors.ink }, textColor:colors.text },
+      grid:{ vertLines:{ color:colors.panel }, horzLines:{ color:colors.panel } }
+    });
+    candleSeries.applyOptions({
+      upColor:colors.long, downColor:colors.short, borderUpColor:colors.long, borderDownColor:colors.short,
+      wickUpColor:colors.long, wickDownColor:colors.short
+    });
+    if(save) saveJSON('ledger_custom_theme', colors);
+    if(lastRun) run({ silent:true });
+  }
+
+  function openThemeEditor(){
+    const saved = loadJSON('ledger_custom_theme', null);
+    if(saved){
+      document.getElementById('themeInk').value = saved.ink;
+      document.getElementById('themePanel').value = saved.panel;
+      document.getElementById('themeText').value = saved.text;
+      document.getElementById('themeLong').value = saved.long;
+      document.getElementById('themeShort').value = saved.short;
+      document.getElementById('themeStructure').value = saved.structure;
+    }
+    document.getElementById('themeEditorOverlay').classList.add('open');
+  }
+  function closeThemeEditor(){ document.getElementById('themeEditorOverlay').classList.remove('open'); }
+
+  document.getElementById('themeEditorBtn').addEventListener('click', openThemeEditor);
+  document.getElementById('closeThemeEditor').addEventListener('click', closeThemeEditor);
+  document.getElementById('themeEditorOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'themeEditorOverlay') closeThemeEditor();
+  });
+  document.getElementById('applyCustomThemeBtn').addEventListener('click', () => {
+    const colors = {
+      ink: document.getElementById('themeInk').value,
+      panel: document.getElementById('themePanel').value,
+      text: document.getElementById('themeText').value,
+      long: document.getElementById('themeLong').value,
+      short: document.getElementById('themeShort').value,
+      structure: document.getElementById('themeStructure').value
+    };
+    applyCustomTheme(colors, true);
+    closeThemeEditor();
+  });
+  document.getElementById('resetThemeBtn').addEventListener('click', () => {
+    localStorage.removeItem('ledger_custom_theme');
+    location.reload();
+  });
+
+  // apply any saved custom theme on load (after the default dark/light theme has been set)
+  (function initCustomTheme(){
+    const saved = loadJSON('ledger_custom_theme', null);
+    if(saved) applyCustomTheme(saved, false);
+  })();
+
+  // ---------- replay mode ----------
+  function renderReplayFrame(){
+    if(!lastRun) return;
+    const subset = lastRun.candles.slice(0, replayIndex);
+    if(subset.length < 10) return;
+    const swings = findSwings(subset);
+    const zigzag = buildZigzag(swings);
+    const range = computeDealingRange(zigzag);
+    const events = buildStructure(subset, swings);
+    const avgVol = computeAvgVolume(subset);
+    tagEventVolume(subset, events, avgVol);
+    const blocks = findOrderBlocks(subset, events);
+    const breakers = findBreakerBlocks(subset, blocks);
+    const mitigationBlocks = findMitigationBlocks(subset, blocks, breakers);
+    const allBlocks = blocks.concat(breakers, mitigationBlocks);
+    const fvgs = findFVGs(subset);
+    const pools = findLiquidityPools(subset, swings);
+    const extSwings = findSwings(subset, 6);
+    const extZigzag = buildZigzag(extSwings);
+    renderChart(subset);
+    renderOverlays(subset, allBlocks, events, fvgs, pools, zigzag, range, extZigzag);
+    document.getElementById('replayProgress').textContent = `${replayIndex} / ${lastRun.candles.length} candles`;
+  }
+
+  function startReplay(){
+    if(!lastRun){ alert('Load a chart first, then start replay.'); return; }
+    replayActive = true;
+    replayIndex = Math.min(60, lastRun.candles.length - 5);
+    document.getElementById('replayBar').classList.add('active');
+    renderReplayFrame();
+    chart.timeScale().fitContent();
+  }
+
+  function playReplay(){
+    if(replayTimer || !lastRun) return;
+    const speedMs = parseInt(document.getElementById('replaySpeedSelect').value, 10);
+    replayTimer = setInterval(() => {
+      replayIndex++;
+      if(replayIndex > lastRun.candles.length){ pauseReplay(); return; }
+      renderReplayFrame();
+    }, speedMs);
+    document.getElementById('replayPlayBtn').textContent = '⏸ Pause';
+  }
+  function pauseReplay(){
+    if(replayTimer){ clearInterval(replayTimer); replayTimer = null; }
+    document.getElementById('replayPlayBtn').textContent = '⏵ Play';
+  }
+  function stepReplay(delta){
+    if(!lastRun) return;
+    pauseReplay();
+    replayIndex = Math.max(10, Math.min(lastRun.candles.length, replayIndex + delta));
+    renderReplayFrame();
+  }
+  function exitReplay(){
+    pauseReplay();
+    replayActive = false;
+    document.getElementById('replayBar').classList.remove('active');
+    if(lastRun) run({ silent:true });
+  }
+
+  document.getElementById('replayBtn').addEventListener('click', startReplay);
+  document.getElementById('replayPlayBtn').addEventListener('click', () => { replayTimer ? pauseReplay() : playReplay(); });
+  document.getElementById('replayStepFwdBtn').addEventListener('click', () => stepReplay(1));
+  document.getElementById('replayStepBackBtn').addEventListener('click', () => stepReplay(-1));
+  document.getElementById('replaySpeedSelect').addEventListener('change', () => { if(replayTimer){ pauseReplay(); playReplay(); } });
+  document.getElementById('replayExitBtn').addEventListener('click', exitReplay);
+
+  // ---------- split view ----------
+  async function loadSplitPanel(entry){
+    try{
+      const interval = document.getElementById('intervalSelect').value;
+      const candles = await fetchKlines(entry.select.value, interval, 200);
+      entry.series.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
+      entry.chart.timeScale().fitContent();
+    }catch(e){ /* skip a single panel's failure, others still work */ }
+  }
+
+  function buildSplitGrid(count){
+    const grid = document.getElementById('splitGrid');
+    grid.style.gridTemplateRows = count === 2 ? '1fr' : '1fr 1fr';
+    grid.innerHTML = '';
+    splitCharts.forEach(sc => { try{ sc.chart.remove(); }catch(e){} });
+    splitCharts = [];
+    const defaults = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT'];
+    const options = (watchlist.length ? watchlist : defaults);
+    for(let i=0; i<count; i++){
+      const panel = document.createElement('div');
+      panel.className = 'split-panel';
+      panel.innerHTML = `
+        <div class="split-panel-head">
+          <select class="split-symbol-select">
+            ${options.map(s => `<option value="${s}" ${s === defaults[i] ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div class="split-panel-chart"></div>
+      `;
+      grid.appendChild(panel);
+      const chartDiv = panel.querySelector('.split-panel-chart');
+      const miniChart = LightweightCharts.createChart(chartDiv, {
+        layout:{ background:{ color:'#12151B' }, textColor:'#8A8F9B', fontFamily:"'JetBrains Mono', monospace" },
+        grid:{ vertLines:{ color:'#1E232B' }, horzLines:{ color:'#1E232B' } },
+        rightPriceScale:{ borderColor:'#1E232B' },
+        timeScale:{ borderColor:'#1E232B', timeVisible:true },
+        autoSize:true
+      });
+      const series = miniChart.addCandlestickSeries({
+        upColor:COLORS.up, downColor:COLORS.down, borderUpColor:COLORS.up, borderDownColor:COLORS.down,
+        wickUpColor:COLORS.up, wickDownColor:COLORS.down
+      });
+      const entry = { chart:miniChart, series, select:panel.querySelector('.split-symbol-select') };
+      splitCharts.push(entry);
+      entry.select.addEventListener('change', () => loadSplitPanel(entry));
+      loadSplitPanel(entry);
+    }
+  }
+
+  function openSplitView(){
+    document.getElementById('splitViewOverlay').classList.add('open');
+    const count = parseInt(document.getElementById('splitLayoutSelect').value, 10);
+    requestAnimationFrame(() => buildSplitGrid(count));
+  }
+  function closeSplitView(){
+    document.getElementById('splitViewOverlay').classList.remove('open');
+    splitCharts.forEach(sc => { try{ sc.chart.remove(); }catch(e){} });
+    splitCharts = [];
+  }
+
+  document.getElementById('splitViewBtn').addEventListener('click', openSplitView);
+  document.getElementById('closeSplitView').addEventListener('click', closeSplitView);
+  document.getElementById('splitViewOverlay').addEventListener('click', (e) => {
+    if(e.target.id === 'splitViewOverlay') closeSplitView();
+  });
+  document.getElementById('splitLayoutSelect').addEventListener('change', () => {
+    buildSplitGrid(parseInt(document.getElementById('splitLayoutSelect').value, 10));
+  });
+
+  // ---------- PWA install support ----------
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* sw.js not served (e.g. local file preview) — ignore */ });
+    });
+  }
 })();
 </script>
 </body>
