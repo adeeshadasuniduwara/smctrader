@@ -835,6 +835,13 @@
         <option value="binance">Binance</option>
         <option value="bybit">Bybit</option>
       </select>
+      <select id="historySelect" title="Number of candles loaded (paginated beyond 1000)">
+        <option value="500">500 candles</option>
+        <option value="1000" selected>1000 candles</option>
+        <option value="2000">2000 candles</option>
+        <option value="5000">5000 candles</option>
+        <option value="10000">10000 candles</option>
+      </select>
       <button id="replayBtn" class="secondary-btn">Replay</button>
       <button id="splitViewBtn" class="secondary-btn">Split View</button>
       <button id="screenshotBtn" class="secondary-btn" title="Export chart as PNG">📷</button>
@@ -991,9 +998,11 @@
         <h2>Backtest &mdash; <span id="btSymbolLabel">&mdash;</span></h2>
         <button class="close-btn" id="closeBacktest">✕</button>
       </div>
-      <p class="modal-sub">Simulates every historical order-block retest in the loaded 500-candle window: entry at the block edge, fixed 2R target, stop beyond the block. Past structure, not a guarantee of future setups.</p>
+      <p class="modal-sub">Simulates every historical order-block retest in the loaded window that got a confirmation candle: entry at the confirmation close, ATR-scaled stop, fixed 2R target, stop/target walked forward candle by candle. Past structure, not a guarantee of future setups.</p>
       <div class="bt-stats" id="btStats"></div>
       <div id="btChart" class="bt-chart"></div>
+      <div class="insight-label" style="margin-top:16px; margin-bottom:8px;">Volume-confirmed breaks vs. not (does that confluence factor actually help here?)</div>
+      <div class="bt-stats" id="btConfluenceStats"></div>
       <div class="insight-label" style="margin-top:16px; margin-bottom:8px;">Win rate by session (entry candle's UTC hour)</div>
       <div class="bt-stats" id="btSessionStats"></div>
       <div class="bt-table-wrap" style="margin-top:14px;">
@@ -1314,8 +1323,8 @@
   }
 
   // ---------- data fetch ----------
-  async function fetchKlines(symbol, interval, limit){
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  async function fetchKlines(symbol, interval, limit, endTime){
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}` + (endTime ? `&endTime=${endTime}` : '');
     const res = await fetch(url);
     if(!res.ok) throw new Error('Binance API error: ' + res.status);
     const raw = await res.json();
@@ -1329,6 +1338,27 @@
     }));
   }
 
+  // Binance caps a single request at 1000 candles — this pages backward with endTime to
+  // assemble arbitrarily long history. Capped at 20 requests (~20k candles) as a sane ceiling
+  // so "unlimited" doesn't turn into hundreds of requests on a slow connection.
+  async function fetchKlinesUnlimited(symbol, interval, totalWanted){
+    const BATCH = 1000;
+    if(totalWanted <= BATCH) return fetchKlines(symbol, interval, totalWanted);
+    let all = [];
+    let endTime = null;
+    let guard = 0;
+    while(all.length < totalWanted && guard < 20){
+      guard++;
+      const need = Math.min(BATCH, totalWanted - all.length);
+      const batch = await fetchKlines(symbol, interval, need, endTime || undefined);
+      if(!batch.length) break;
+      all = batch.concat(all);
+      endTime = batch[0].time * 1000 - 1;
+      if(batch.length < need) break; // exchange has no more history before this point
+    }
+    return all;
+  }
+
   // ---------- multi-exchange: Bybit as an alternate data source for the main chart ----------
   const BYBIT_INTERVAL_MAP = {
     '1m':'1', '3m':'3', '5m':'5', '15m':'15', '30m':'30',
@@ -1336,9 +1366,9 @@
     '1d':'D', '3d':'D', '1w':'W', '1M':'M'
   };
 
-  async function fetchKlinesBybit(symbol, interval, limit){
+  async function fetchKlinesBybit(symbol, interval, limit, endMs){
     const biInterval = BYBIT_INTERVAL_MAP[interval] || '60';
-    const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${biInterval}&limit=${limit}`;
+    const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${biInterval}&limit=${limit}` + (endMs ? `&end=${endMs}` : '');
     const res = await fetch(url);
     if(!res.ok) throw new Error('Bybit API error: ' + res.status);
     const data = await res.json();
@@ -1351,12 +1381,30 @@
     })).sort((a,b) => a.time - b.time);
   }
 
+  async function fetchKlinesBybitUnlimited(symbol, interval, totalWanted){
+    const BATCH = 1000;
+    if(totalWanted <= BATCH) return fetchKlinesBybit(symbol, interval, totalWanted);
+    let all = [];
+    let endMs = null;
+    let guard = 0;
+    while(all.length < totalWanted && guard < 20){
+      guard++;
+      const need = Math.min(BATCH, totalWanted - all.length);
+      const batch = await fetchKlinesBybit(symbol, interval, need, endMs || undefined);
+      if(!batch.length) break;
+      all = batch.concat(all);
+      endMs = batch[0].time * 1000 - 1;
+      if(batch.length < need) break;
+    }
+    return all;
+  }
+
   // only the main chart's primary candle series respects the exchange toggle — HTF, screener,
   // batch backtest, correlation checker, BTC overlay, and sentiment/market-pulse data all stay
   // on Binance, since those endpoints (futures funding, F&G, dominance) only exist there anyway
   async function fetchMainKlines(symbol, interval, limit){
     const exchange = document.getElementById('exchangeSelect').value;
-    return exchange === 'bybit' ? fetchKlinesBybit(symbol, interval, limit) : fetchKlines(symbol, interval, limit);
+    return exchange === 'bybit' ? fetchKlinesBybitUnlimited(symbol, interval, limit) : fetchKlinesUnlimited(symbol, interval, limit);
   }
 
   // maps the chart's timeframe to the next timeframe up, used for HTF bias confirmation
@@ -1529,6 +1577,29 @@
     return avg;
   }
 
+  // Average True Range (Wilder-style, simple rolling mean of true range for clarity).
+  // Used to scale stop-loss distance to the pair's actual volatility instead of a flat
+  // percentage — a fixed 0.2% buffer is way too tight on a volatile altcoin and way too
+  // loose on a calm major pair.
+  function computeATR(candles, period){
+    period = period || 14;
+    const atr = new Array(candles.length).fill(0);
+    let sum = 0;
+    for(let i=0; i<candles.length; i++){
+      const c = candles[i];
+      const prevClose = i > 0 ? candles[i-1].close : c.close;
+      const tr = Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+      sum += tr;
+      if(i >= period) sum -= (function(){
+        const pc = candles[i-period];
+        const ppc = i-period > 0 ? candles[i-period-1].close : pc.close;
+        return Math.max(pc.high - pc.low, Math.abs(pc.high - ppc), Math.abs(pc.low - ppc));
+      })();
+      atr[i] = i >= period-1 ? sum/period : sum/(i+1);
+    }
+    return atr;
+  }
+
   // tags each structure event with whether the breaking candle traded on above-average
   // volume (a genuine, well-participated break vs a low-volume/likely-to-fail one)
   function tagEventVolume(candles, events, avgVol, mult){
@@ -1608,6 +1679,28 @@
       const span = legHigh - legLow;
       return { lower: legLow + span * 0.618, upper: legLow + span * 0.79, legLow, legHigh };
     }
+  }
+
+  // Finds the nearest real obstacle beyond entry in the trade's direction — a resting
+  // liquidity pool or a zigzag swing point — instead of a made-up fixed R-multiple. A fixed
+  // 2R target ignores the actual order flow between entry and "somewhere"; the nearest
+  // opposing pool/swing is where price is most likely to react first. Falls back to the
+  // R-multiple target if nothing is found close enough to give a sane R:R (>= 1.2).
+  function findDynamicTarget(entry, dir, risk, pools, zigzag, fallbackTarget){
+    const candidates = [];
+    pools.forEach(p => {
+      if(dir === 'up' && p.type === 'high' && p.price > entry) candidates.push(p.price);
+      if(dir === 'down' && p.type === 'low' && p.price < entry) candidates.push(p.price);
+    });
+    zigzag.forEach(z => {
+      if(dir === 'up' && z.type === 'high' && z.price > entry) candidates.push(z.price);
+      if(dir === 'down' && z.type === 'low' && z.price < entry) candidates.push(z.price);
+    });
+    if(!candidates.length) return { target: fallbackTarget, dynamic: false };
+    const nearest = dir === 'up' ? Math.min(...candidates) : Math.max(...candidates);
+    const rr = Math.abs(nearest - entry) / risk;
+    if(rr < 1.2) return { target: fallbackTarget, dynamic: false }; // too close to be worth the trade — use the fallback instead
+    return { target: nearest, dynamic: true };
   }
 
   // 2. Walk swings to build structure events: BOS (trend continuation break) and CHoCH (trend reversal break)
@@ -1827,22 +1920,34 @@
   }
 
   // 6. Backtest engine: every order block that was later retested (b.mitigatedAt) is treated
-  //    as a triggered entry. Fixed 2R target, stop beyond the block, walked forward candle by
-  //    candle to see whichever level was hit first. This intentionally ignores the live
-  //    confluence bonuses (sweep/FVG/HTF/zone) so it reflects the raw, unweighted edge of
-  //    "trade every retested order block" as a baseline.
-  function runBacktest(candles, blocks){
+  //    as a candidate entry — but only counted if the candle right after the retest actually
+  //    confirms (closes in the trade's favor), not just a wick touch. Stop is ATR-scaled to
+  //    the pair's real volatility rather than a flat percentage. Fixed 2R target, walked
+  //    forward candle by candle to see whichever level was hit first. This intentionally
+  //    ignores the live confluence bonuses (sweep/FVG/HTF/zone) so it reflects the raw edge of
+  //    "trade every confirmed order-block retest" as a baseline — except volume confirmation,
+  //    which is tagged on each trade so its real effect on win rate can be measured below.
+  function runBacktest(candles, blocks, atr){
+    atr = atr || computeATR(candles);
     const trades = [];
     blocks.forEach(b => {
       if(b.mitigatedAt == null) return; // never retested -> no entry ever triggered
+      const confirmIdx = b.mitigatedAt + 1;
+      if(confirmIdx >= candles.length) return;
+      const confirmCandle = candles[confirmIdx];
+      const confirmed = b.dir === 'up' ? confirmCandle.close > confirmCandle.open : confirmCandle.close < confirmCandle.open;
+      if(!confirmed) return; // no follow-through candle — skip, this wasn't a real trigger
+
       const entry = b.dir === 'up' ? b.top : b.bottom;
-      const stop = b.dir === 'up' ? b.bottom * 0.998 : b.top * 1.002;
+      const atrAtBlock = atr[b.i] || (entry * 0.008);
+      const stopBuffer = Math.max(atrAtBlock * 0.25, entry * 0.0008);
+      const stop = b.dir === 'up' ? b.bottom - stopBuffer : b.top + stopBuffer;
       const risk = Math.abs(entry - stop);
       if(risk <= 0 || !isFinite(risk)) return;
       const target = b.dir === 'up' ? entry + risk * 2 : entry - risk * 2;
 
       let outcome = null, exitIndex = null;
-      for(let k = b.mitigatedAt; k < candles.length; k++){
+      for(let k = confirmIdx; k < candles.length; k++){
         const c = candles[k];
         if(b.dir === 'up'){
           if(c.low <= stop){ outcome = 'loss'; exitIndex = k; break; }
@@ -1854,9 +1959,10 @@
       }
       if(outcome){
         trades.push({
-          dir: b.dir, kind: b.kind, entry, stop, target,
-          entryIndex: b.mitigatedAt, exitIndex,
-          outcome, r: outcome === 'win' ? 2 : -1
+          dir: b.dir, kind: b.isBreaker ? 'Breaker' : (b.isMitigationBlock ? 'Mitigation' : b.kind),
+          entry, stop, target, entryIndex: confirmIdx, exitIndex,
+          outcome, r: outcome === 'win' ? 2 : -1,
+          volConfirmed: !!b.volumeConfirmed
         });
       }
     });
@@ -1883,7 +1989,9 @@
   //    the break happened on above-average volume, a bonus if the entry sits in the Fibonacci
   //    OTE (61.8%–79%) zone of its impulse leg, a bonus if it agrees with the higher-degree
   //    ("external") structure trend, and a contrarian bonus against crowded futures positioning.
-  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend, majorTrend, sentiment, rejectionBlocks){
+  //    Stop distance is ATR-scaled (not a flat %) and target is the nearest real liquidity/swing
+  //    obstacle when one exists, falling back to a confluence-weighted R-multiple otherwise.
+  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend, majorTrend, sentiment, rejectionBlocks, atr, zigzag){
     const signals = [];
     const lastEventByDir = {};
     events.forEach(ev => { lastEventByDir[ev.dir] = ev; });
@@ -1900,7 +2008,12 @@
         p.sweptAt !== null && p.sweptAt <= b.eventIndex && (b.eventIndex - p.sweptAt) < 15);
 
       const entry = b.dir === 'up' ? b.top : b.bottom;
-      const stop = b.dir === 'up' ? b.bottom * 0.998 : b.top * 1.002;
+      // ATR-scaled stop buffer (quarter-ATR breathing room beyond the block edge) instead of
+      // a flat 0.2% — a fixed percentage is far too tight on a volatile pair and far too loose
+      // on a calm one. Falls back to the old 0.2% if ATR data isn't available at this index.
+      const atrAtBlock = (atr && atr[b.i]) || (entry * 0.002 * 4);
+      const stopBuffer = Math.max(atrAtBlock * 0.25, entry * 0.0008);
+      const stop = b.dir === 'up' ? b.bottom - stopBuffer : b.top + stopBuffer;
       const risk = Math.abs(entry - stop);
 
       const inGoodZone = range && (b.dir === 'up' ? entry < range.eq : entry > range.eq);
@@ -1930,7 +2043,12 @@
       if(majorAligned) mult += 0.5;
       if(sentimentAligned) mult += 0.5;
       if(rejectionConfluence) mult += 0.5;
-      const target = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
+      const fallbackTarget = b.dir === 'up' ? entry + risk * mult : entry - risk * mult;
+
+      const targetInfo = zigzag
+        ? findDynamicTarget(entry, b.dir, risk, pools, zigzag, fallbackTarget)
+        : { target: fallbackTarget, dynamic: false };
+      const target = targetInfo.target;
 
       const kindLabel = b.isBreaker ? 'Breaker' : (b.isMitigationBlock ? 'Mitigation' : b.kind);
       const basisParts = [kindLabel];
@@ -1943,6 +2061,7 @@
       basisParts.push(majorAligned ? 'major structure' : null);
       basisParts.push(sentimentAligned ? `crowded-${sentiment.crowded} unwind` : null);
       basisParts.push(rejectionConfluence ? 'rejection wick' : null);
+      basisParts.push(targetInfo.dynamic ? 'target = nearest liquidity/swing' : null);
       const tags = basisParts.filter(Boolean);
       const score = (confluentSweep ? 2 : 0) + (confluentFVG ? 1 : 0) + (inGoodZone ? 1 : 0) +
         (htfAligned ? 2 : 0) + (volConfirmed ? 1 : 0) + (inOTE ? 1 : 0) + (majorAligned ? 1 : 0) +
@@ -1954,6 +2073,7 @@
         basis: tags.length > 1 ? tags.join(' + ') : `${tags[0]} ${zoneTypeLabel}`,
         entry, stop, target,
         rr: (Math.abs(target-entry)/risk).toFixed(1),
+        dynamicTarget: targetInfo.dynamic,
         blockIndex: b.i,
         eventIndex: b.eventIndex,
         recency: candles.length - b.eventIndex,
@@ -2386,7 +2506,7 @@
       card.className = 'signal-card ' + (s.dir === 'up' ? 'long' : 'short');
       card.innerHTML = `
         <div class="row1">
-          <div class="kind">${s.isBreaker ? '<span class="badge zone">BREAKER</span>' : ''}${s.isMitigationBlock ? '<span class="badge zone">MITIGATION</span>' : ''}${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.volConfirmed ? '<span class="badge">Vol ✓</span>' : ''}${s.inOTE ? '<span class="badge">OTE</span>' : ''}${s.majorAligned ? '<span class="badge zone">Major ✓</span>' : ''}${s.sentimentAligned ? '<span class="badge">Sentiment ✓</span>' : ''}${s.rejectionConfluence ? '<span class="badge">Rejection ✓</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
+          <div class="kind">${s.isBreaker ? '<span class="badge zone">BREAKER</span>' : ''}${s.isMitigationBlock ? '<span class="badge zone">MITIGATION</span>' : ''}${s.dir === 'up' ? 'LONG SETUP' : 'SHORT SETUP'} ${s.hasSweep ? '<span class="badge">★ high confidence</span>' : ''}${s.inGoodZone ? `<span class="badge zone">${s.dir === 'up' ? 'discount' : 'premium'}</span>` : ''}${s.htfAligned ? '<span class="badge zone">HTF ✓</span>' : ''}${s.volConfirmed ? '<span class="badge">Vol ✓</span>' : ''}${s.inOTE ? '<span class="badge">OTE</span>' : ''}${s.majorAligned ? '<span class="badge zone">Major ✓</span>' : ''}${s.sentimentAligned ? '<span class="badge">Sentiment ✓</span>' : ''}${s.rejectionConfluence ? '<span class="badge">Rejection ✓</span>' : ''}${s.dynamicTarget ? '<span class="badge zone">Target: liquidity</span>' : ''}${s.htfCounter ? '<span class="badge warn">counter-trend</span>' : ''}</div>
           <div class="basis">${s.basis}</div>
         </div>
         <div class="grid">
@@ -2440,7 +2560,7 @@
     try{
       const wantBtcOverlay = document.getElementById('btcOverlayToggle').checked && symbol !== 'BTCUSDT';
       const [candles, htf, sentiment, fng, btcDom, lsRatio, obImbalance, btcCandles] = await Promise.all([
-        fetchMainKlines(symbol, interval, 500),
+        fetchMainKlines(symbol, interval, parseInt(document.getElementById('historySelect').value, 10)),
         fetchHTFTrend(symbol, interval),
         fetchSentiment(symbol),
         fetchFearGreed(),
@@ -2454,6 +2574,7 @@
       const range = computeDealingRange(zigzag);
       const events = buildStructure(candles, swings);
       const avgVol = computeAvgVolume(candles);
+      const atr = computeATR(candles);
       tagEventVolume(candles, events, avgVol);
       const blocks = findOrderBlocks(candles, events);
       const breakers = findBreakerBlocks(candles, blocks);
@@ -2469,7 +2590,7 @@
       const extEvents = buildStructure(candles, extSwings);
       const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
 
-      const signals = generateSignals(candles, events, allBlocks, fvgs, pools, range, htf.trend, majorTrend, sentiment, rejectionBlocks);
+      const signals = generateSignals(candles, events, allBlocks, fvgs, pools, range, htf.trend, majorTrend, sentiment, rejectionBlocks, atr, zigzag);
       currentSignals = signals;
 
       renderChart(candles);
@@ -2600,6 +2721,7 @@
   document.getElementById('symbolSelect').addEventListener('change', () => { document.getElementById('customSymbol').value=''; run(); });
   document.getElementById('btcOverlayToggle').addEventListener('change', () => run({ silent:true }));
   document.getElementById('exchangeSelect').addEventListener('change', () => run());
+  document.getElementById('historySelect').addEventListener('change', () => run());
   window.addEventListener('DOMContentLoaded', run);
 
   // ---------- backtest modal ----------
@@ -2684,12 +2806,35 @@
     }).join('');
   }
 
+  // measures whether the volume-confirmation confluence factor actually correlates with a
+  // higher win rate on this pair/timeframe's history — data instead of a hand-tuned guess
+  function computeConfluencePerformance(trades){
+    const groups = { 'Volume confirmed': {wins:0,losses:0}, 'No volume confirmation': {wins:0,losses:0} };
+    trades.forEach(t => {
+      const key = t.volConfirmed ? 'Volume confirmed' : 'No volume confirmation';
+      if(t.outcome === 'win') groups[key].wins++; else groups[key].losses++;
+    });
+    return groups;
+  }
+
+  function renderConfluenceBreakdown(groups){
+    const el = document.getElementById('btConfluenceStats');
+    el.innerHTML = Object.keys(groups).map(name => {
+      const g = groups[name];
+      const total = g.wins + g.losses;
+      const rate = total ? (g.wins / total * 100) : null;
+      return `<div class="bt-stat"><div class="lbl">${name}</div><div class="val ${rate === null ? '' : (rate >= 50 ? 'up' : 'down')}">${rate === null ? 'n/a' : rate.toFixed(0) + '%'}</div><div style="font-size:9px; color:var(--text-dim); margin-top:2px;">${total} trades</div></div>`;
+    }).join('');
+  }
+
   function openBacktest(){
     if(!lastRun) return;
-    const result = runBacktest(lastRun.candles, lastRun.blocks);
+    const atr = computeATR(lastRun.candles);
+    const result = runBacktest(lastRun.candles, lastRun.blocks, atr);
     document.getElementById('btSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval}`;
     renderBacktestStats(result);
     renderSessionBreakdown(computeSessionBreakdown(result.trades, lastRun.candles));
+    renderConfluenceBreakdown(computeConfluencePerformance(result.trades));
     document.getElementById('backtestOverlay').classList.add('open');
     // chart needs a visible, sized container before init — render on next frame
     requestAnimationFrame(() => {
@@ -2739,6 +2884,7 @@
     const range = computeDealingRange(zigzag);
     const events = buildStructure(candles, swings);
     const avgVol = computeAvgVolume(candles);
+    const atr = computeATR(candles);
     tagEventVolume(candles, events, avgVol);
     const blocks = findOrderBlocks(candles, events);
     const breakers = findBreakerBlocks(candles, blocks);
@@ -2750,7 +2896,7 @@
     const extSwings = findSwings(candles, 6);
     const extEvents = buildStructure(candles, extSwings);
     const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
-    return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null, rejectionBlocks);
+    return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null, rejectionBlocks, atr, zigzag);
   }
 
   // shares the structure/order-block pipeline with analyzeSymbolQuick but stops before
