@@ -965,6 +965,10 @@
         <h2>Signal feed</h2>
         <p>Generated from structure breaks retesting unmitigated order blocks &amp; FVGs.</p>
         <div class="preset-row">
+          <button class="preset-btn active" id="modeBest">★ Best signal only</button>
+          <button class="preset-btn" id="modeAll">Show all setups</button>
+        </div>
+        <div class="preset-row" id="presetRow" style="display:none;">
           <button class="preset-btn active" id="presetAll" data-min="0">All</button>
           <button class="preset-btn" id="presetConservative" data-min="6">Conservative (6+)</button>
           <button class="preset-btn" id="presetAggressive" data-min="2">Aggressive (2+)</button>
@@ -2360,14 +2364,20 @@
 
   let activePresetMin = 0;
   let lastRenderedSignals = [];
+  let feedMode = 'best'; // 'best' shows only the single top-scored setup; 'all' shows the full ranked list
 
   function renderSignals(signals, symbol){
     lastRenderedSignals = signals;
     const feed = document.getElementById('signalFeed');
     feed.innerHTML = '';
-    const filtered = signals.filter(s => s.score >= activePresetMin);
+    // signals arrive already sorted by score desc, then recency — so [0] is the strongest
+    const scoreFiltered = signals.filter(s => s.score >= activePresetMin);
+    const filtered = feedMode === 'best' ? scoreFiltered.slice(0, 1) : scoreFiltered;
     if(filtered.length === 0){
-      feed.innerHTML = `<div class="empty-state">${signals.length === 0 ? 'No unmitigated order blocks in range right now. Try a different timeframe.' : 'No signals meet the current preset threshold — try a lower one.'}</div>`;
+      const reason = signals.length === 0
+        ? 'No unmitigated order blocks in range right now. Try a different timeframe.'
+        : (feedMode === 'best' ? 'No setup currently clears the confluence bar — nothing worth trading right now.' : 'No signals meet the current preset threshold — try a lower one.');
+      feed.innerHTML = `<div class="empty-state">${reason}</div>`;
       return;
     }
     const signalsToRender = filtered;
@@ -3430,13 +3440,23 @@
   // ---------- strategy presets ----------
   function setPreset(min, btnId){
     activePresetMin = min;
-    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('#presetRow .preset-btn').forEach(b => b.classList.remove('active'));
     document.getElementById(btnId).classList.add('active');
     renderSignals(lastRenderedSignals, (document.getElementById('customSymbol').value.trim() || document.getElementById('symbolSelect').value).toUpperCase());
   }
   document.getElementById('presetAll').addEventListener('click', () => setPreset(0, 'presetAll'));
   document.getElementById('presetConservative').addEventListener('click', () => setPreset(6, 'presetConservative'));
   document.getElementById('presetAggressive').addEventListener('click', () => setPreset(2, 'presetAggressive'));
+
+  function setFeedMode(mode, btnId){
+    feedMode = mode;
+    document.getElementById('modeBest').classList.toggle('active', mode === 'best');
+    document.getElementById('modeAll').classList.toggle('active', mode === 'all');
+    document.getElementById('presetRow').style.display = mode === 'all' ? 'flex' : 'none';
+    renderSignals(lastRenderedSignals, (document.getElementById('customSymbol').value.trim() || document.getElementById('symbolSelect').value).toUpperCase());
+  }
+  document.getElementById('modeBest').addEventListener('click', () => setFeedMode('best'));
+  document.getElementById('modeAll').addEventListener('click', () => setFeedMode('all'));
 
   // ---------- custom theme editor ----------
   function applyCustomTheme(colors, save){
