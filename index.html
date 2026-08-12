@@ -610,6 +610,28 @@
     background:rgba(240,180,41,0.08);
   }
 
+  /* ---------- SCALP / SWING STYLE TOGGLE ---------- */
+  .style-toggle{
+    display:flex;
+    border:1px solid var(--line);
+    border-radius:3px;
+    overflow:hidden;
+  }
+  .style-btn{
+    background:var(--panel-raised);
+    color:var(--text-dim);
+    border:none;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size:12px;
+    padding:9px 14px;
+    cursor:pointer;
+  }
+  .style-btn.active{
+    background:var(--structure);
+    color:var(--ink);
+  }
+
   /* ---------- BACKTEST MODAL ---------- */
   .modal-overlay{
     display:none;
@@ -803,15 +825,19 @@
         <option value="LINKUSDT">LINK / USDT</option>
       </select>
       <input type="text" id="customSymbol" placeholder="custom e.g. AVAXUSDT" size="16" />
+      <div class="style-toggle" id="styleToggle">
+        <button class="style-btn" data-style="scalp" title="Tighter stops, smaller targets, faster swing detection, 1m-15m">Scalp</button>
+        <button class="style-btn active" data-style="swing" title="Wider stops, bigger targets, major-structure detection, 4h-1w">Swing</button>
+      </div>
       <select id="intervalSelect">
         <option value="1m">1m</option>
         <option value="3m">3m</option>
         <option value="5m">5m</option>
         <option value="15m">15m</option>
         <option value="30m">30m</option>
-        <option value="1h" selected>1h</option>
+        <option value="1h">1h</option>
         <option value="2h">2h</option>
-        <option value="4h">4h</option>
+        <option value="4h" selected>4h</option>
         <option value="6h">6h</option>
         <option value="8h">8h</option>
         <option value="12h">12h</option>
@@ -971,6 +997,7 @@
       <div class="sidebar-head">
         <h2>Signal feed</h2>
         <p>Generated from structure breaks retesting unmitigated order blocks &amp; FVGs.</p>
+        <p id="styleNote" style="color:var(--structure);">&mdash;</p>
         <div class="preset-row">
           <button class="preset-btn active" id="modeBest">★ Best signal only</button>
           <button class="preset-btn" id="modeAll">Show all setups</button>
@@ -1294,6 +1321,33 @@
   let currentCandles = []; // kept for re-drawing kill zones on pan/zoom/resize
   let currentSignals = []; // last rendered signal list, used by journal/calc "log" buttons
   let alertRefreshMs = 45000;
+
+  // ---------- scalp vs swing trading style ----------
+  // Each style tunes the same engine differently rather than being a separate codepath:
+  // scalp wants fast, tight, locally-reactive structure; swing wants slow, wide, patient structure.
+  const STYLE_PRESETS = {
+    scalp: {
+      swingWindow: 1,      // fractal window for internal structure — tighter = catches micro swings
+      extWindow: 4,        // fractal window for external/major structure
+      atrStopMult: 0.15,   // tighter ATR-scaled stop buffer — scalps can't afford wide stops
+      baseRMult: 1.5,      // smaller base R target — scalps take quick, modest wins
+      rangeLookback: 4,    // fewer zigzag points for the premium/discount dealing range — very local
+      volPeriod: 10,       // shorter average-volume window — reacts faster to recent activity
+      recommendedIntervals: ['1m','3m','5m','15m'],
+      defaultInterval: '5m'
+    },
+    swing: {
+      swingWindow: 3,
+      extWindow: 8,
+      atrStopMult: 0.35,
+      baseRMult: 3,
+      rangeLookback: 12,
+      volPeriod: 30,
+      recommendedIntervals: ['4h','6h','8h','12h','1d','3d','1w'],
+      defaultInterval: '4h'
+    }
+  };
+  let tradingStyle = 'swing';
 
   // ---------- local persistence helpers ----------
   function loadJSON(key, fallback){
@@ -1927,8 +1981,9 @@
   //    ignores the live confluence bonuses (sweep/FVG/HTF/zone) so it reflects the raw edge of
   //    "trade every confirmed order-block retest" as a baseline — except volume confirmation,
   //    which is tagged on each trade so its real effect on win rate can be measured below.
-  function runBacktest(candles, blocks, atr){
+  function runBacktest(candles, blocks, atr, style){
     atr = atr || computeATR(candles);
+    style = style || STYLE_PRESETS.swing;
     const trades = [];
     blocks.forEach(b => {
       if(b.mitigatedAt == null) return; // never retested -> no entry ever triggered
@@ -1940,11 +1995,11 @@
 
       const entry = b.dir === 'up' ? b.top : b.bottom;
       const atrAtBlock = atr[b.i] || (entry * 0.008);
-      const stopBuffer = Math.max(atrAtBlock * 0.25, entry * 0.0008);
+      const stopBuffer = Math.max(atrAtBlock * style.atrStopMult, entry * 0.0008);
       const stop = b.dir === 'up' ? b.bottom - stopBuffer : b.top + stopBuffer;
       const risk = Math.abs(entry - stop);
       if(risk <= 0 || !isFinite(risk)) return;
-      const target = b.dir === 'up' ? entry + risk * 2 : entry - risk * 2;
+      const target = b.dir === 'up' ? entry + risk * style.baseRMult : entry - risk * style.baseRMult;
 
       let outcome = null, exitIndex = null;
       for(let k = confirmIdx; k < candles.length; k++){
@@ -1991,7 +2046,8 @@
   //    ("external") structure trend, and a contrarian bonus against crowded futures positioning.
   //    Stop distance is ATR-scaled (not a flat %) and target is the nearest real liquidity/swing
   //    obstacle when one exists, falling back to a confluence-weighted R-multiple otherwise.
-  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend, majorTrend, sentiment, rejectionBlocks, atr, zigzag){
+  function generateSignals(candles, events, blocks, fvgs, pools, range, htfTrend, majorTrend, sentiment, rejectionBlocks, atr, zigzag, style){
+    style = style || STYLE_PRESETS.swing;
     const signals = [];
     const lastEventByDir = {};
     events.forEach(ev => { lastEventByDir[ev.dir] = ev; });
@@ -2008,11 +2064,11 @@
         p.sweptAt !== null && p.sweptAt <= b.eventIndex && (b.eventIndex - p.sweptAt) < 15);
 
       const entry = b.dir === 'up' ? b.top : b.bottom;
-      // ATR-scaled stop buffer (quarter-ATR breathing room beyond the block edge) instead of
-      // a flat 0.2% — a fixed percentage is far too tight on a volatile pair and far too loose
-      // on a calm one. Falls back to the old 0.2% if ATR data isn't available at this index.
+      // ATR-scaled stop buffer, scaled by the active style (tight for scalp, wide for swing)
+      // instead of a flat percentage — a fixed % is far too tight on a volatile pair and far
+      // too loose on a calm one. Falls back to a rough estimate if ATR isn't available yet.
       const atrAtBlock = (atr && atr[b.i]) || (entry * 0.002 * 4);
-      const stopBuffer = Math.max(atrAtBlock * 0.25, entry * 0.0008);
+      const stopBuffer = Math.max(atrAtBlock * style.atrStopMult, entry * 0.0008);
       const stop = b.dir === 'up' ? b.bottom - stopBuffer : b.top + stopBuffer;
       const risk = Math.abs(entry - stop);
 
@@ -2033,7 +2089,7 @@
       // independent read of the same price rejection
       const rejectionConfluence = !!(rejectionBlocks && rejectionBlocks.find(r => r.dir === b.dir && Math.abs(r.i - b.i) <= 1));
 
-      let mult = 2;
+      let mult = style.baseRMult;
       if(confluentFVG) mult += 1;
       if(confluentSweep) mult += 1;
       if(inGoodZone) mult += 0.5;
@@ -2569,11 +2625,12 @@
         fetchOrderBookImbalance(symbol),
         wantBtcOverlay ? fetchKlines('BTCUSDT', interval, 500) : Promise.resolve(null)
       ]);
-      const swings = findSwings(candles);
+      const style = STYLE_PRESETS[tradingStyle];
+      const swings = findSwings(candles, style.swingWindow);
       const zigzag = buildZigzag(swings);
-      const range = computeDealingRange(zigzag);
+      const range = computeDealingRange(zigzag, style.rangeLookback);
       const events = buildStructure(candles, swings);
-      const avgVol = computeAvgVolume(candles);
+      const avgVol = computeAvgVolume(candles, style.volPeriod);
       const atr = computeATR(candles);
       tagEventVolume(candles, events, avgVol);
       const blocks = findOrderBlocks(candles, events);
@@ -2585,12 +2642,12 @@
       const pools = findLiquidityPools(candles, swings);
 
       // external / major structure: same pipeline, wider fractal window
-      const extSwings = findSwings(candles, 6);
+      const extSwings = findSwings(candles, style.extWindow);
       const extZigzag = buildZigzag(extSwings);
       const extEvents = buildStructure(candles, extSwings);
       const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
 
-      const signals = generateSignals(candles, events, allBlocks, fvgs, pools, range, htf.trend, majorTrend, sentiment, rejectionBlocks, atr, zigzag);
+      const signals = generateSignals(candles, events, allBlocks, fvgs, pools, range, htf.trend, majorTrend, sentiment, rejectionBlocks, atr, zigzag, style);
       currentSignals = signals;
 
       renderChart(candles);
@@ -2721,8 +2778,37 @@
   document.getElementById('symbolSelect').addEventListener('change', () => { document.getElementById('customSymbol').value=''; run(); });
   document.getElementById('btcOverlayToggle').addEventListener('change', () => run({ silent:true }));
   document.getElementById('exchangeSelect').addEventListener('change', () => run());
+
+  // ---------- scalp / swing style toggle ----------
+  function setTradingStyle(style){
+    tradingStyle = style;
+    document.querySelectorAll('.style-btn').forEach(b => b.classList.toggle('active', b.dataset.style === style));
+    const preset = STYLE_PRESETS[style];
+    const intervalSelect = document.getElementById('intervalSelect');
+    // only auto-switch the timeframe if the current one isn't already sensible for this style
+    if(!preset.recommendedIntervals.includes(intervalSelect.value)){
+      intervalSelect.value = preset.defaultInterval;
+    }
+    const note = document.getElementById('styleNote');
+    if(note){
+      note.textContent = style === 'scalp'
+        ? `Scalp mode: tight ATR stop (${preset.atrStopMult}x), ${preset.baseRMult}R base target, fast swing detection — best on ${preset.recommendedIntervals.join('/')}`
+        : `Swing mode: wide ATR stop (${preset.atrStopMult}x), ${preset.baseRMult}R base target, major-structure detection — best on ${preset.recommendedIntervals.join('/')}`;
+    }
+    run();
+  }
+  document.querySelectorAll('.style-btn').forEach(btn => {
+    btn.addEventListener('click', () => setTradingStyle(btn.dataset.style));
+  });
   document.getElementById('historySelect').addEventListener('change', () => run());
   window.addEventListener('DOMContentLoaded', run);
+  (function initStyleNote(){
+    const preset = STYLE_PRESETS[tradingStyle];
+    const note = document.getElementById('styleNote');
+    if(note){
+      note.textContent = `Swing mode: wide ATR stop (${preset.atrStopMult}x), ${preset.baseRMult}R base target, major-structure detection — best on ${preset.recommendedIntervals.join('/')}`;
+    }
+  })();
 
   // ---------- backtest modal ----------
   function renderBacktestStats(result){
@@ -2830,8 +2916,8 @@
   function openBacktest(){
     if(!lastRun) return;
     const atr = computeATR(lastRun.candles);
-    const result = runBacktest(lastRun.candles, lastRun.blocks, atr);
-    document.getElementById('btSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval}`;
+    const result = runBacktest(lastRun.candles, lastRun.blocks, atr, STYLE_PRESETS[tradingStyle]);
+    document.getElementById('btSymbolLabel').textContent = `${lastRun.symbol} · ${lastRun.interval} · ${tradingStyle} mode`;
     renderBacktestStats(result);
     renderSessionBreakdown(computeSessionBreakdown(result.trades, lastRun.candles));
     renderConfluenceBreakdown(computeConfluencePerformance(result.trades));
@@ -2879,11 +2965,12 @@
   // chart, but skips the HTF and funding/OI fetches (one extra request per symbol would
   // triple the total calls for a scan across ~18 pairs) — returns just the ranked signals
   function analyzeSymbolQuick(candles){
-    const swings = findSwings(candles);
+    const style = STYLE_PRESETS[tradingStyle];
+    const swings = findSwings(candles, style.swingWindow);
     const zigzag = buildZigzag(swings);
-    const range = computeDealingRange(zigzag);
+    const range = computeDealingRange(zigzag, style.rangeLookback);
     const events = buildStructure(candles, swings);
-    const avgVol = computeAvgVolume(candles);
+    const avgVol = computeAvgVolume(candles, style.volPeriod);
     const atr = computeATR(candles);
     tagEventVolume(candles, events, avgVol);
     const blocks = findOrderBlocks(candles, events);
@@ -2893,18 +2980,19 @@
     const allBlocks = blocks.concat(breakers, mitigationBlocks);
     const fvgs = findFVGs(candles);
     const pools = findLiquidityPools(candles, swings);
-    const extSwings = findSwings(candles, 6);
+    const extSwings = findSwings(candles, style.extWindow);
     const extEvents = buildStructure(candles, extSwings);
     const majorTrend = extEvents.length ? extEvents[extEvents.length-1].dir : null;
-    return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null, rejectionBlocks, atr, zigzag);
+    return generateSignals(candles, events, allBlocks, fvgs, pools, range, null, majorTrend, null, rejectionBlocks, atr, zigzag, style);
   }
 
   // shares the structure/order-block pipeline with analyzeSymbolQuick but stops before
   // signal scoring — batch backtest just needs the blocks to simulate against
   function computeBlocksOnly(candles){
-    const swings = findSwings(candles);
+    const style = STYLE_PRESETS[tradingStyle];
+    const swings = findSwings(candles, style.swingWindow);
     const events = buildStructure(candles, swings);
-    const avgVol = computeAvgVolume(candles);
+    const avgVol = computeAvgVolume(candles, style.volPeriod);
     tagEventVolume(candles, events, avgVol);
     const blocks = findOrderBlocks(candles, events);
     const breakers = findBreakerBlocks(candles, blocks);
@@ -2929,7 +3017,7 @@
       try{
         const candles = await fetchKlines(sym, interval, 500);
         const blocks = computeBlocksOnly(candles);
-        const result = runBacktest(candles, blocks);
+        const result = runBacktest(candles, blocks, null, STYLE_PRESETS[tradingStyle]);
         rows.push({ symbol: sym, ...result });
         combinedTrades += result.trades.length;
         combinedWins += result.wins;
@@ -3674,11 +3762,12 @@
     if(!lastRun) return;
     const subset = lastRun.candles.slice(0, replayIndex);
     if(subset.length < 10) return;
-    const swings = findSwings(subset);
+    const style = STYLE_PRESETS[tradingStyle];
+    const swings = findSwings(subset, style.swingWindow);
     const zigzag = buildZigzag(swings);
-    const range = computeDealingRange(zigzag);
+    const range = computeDealingRange(zigzag, style.rangeLookback);
     const events = buildStructure(subset, swings);
-    const avgVol = computeAvgVolume(subset);
+    const avgVol = computeAvgVolume(subset, style.volPeriod);
     tagEventVolume(subset, events, avgVol);
     const blocks = findOrderBlocks(subset, events);
     const breakers = findBreakerBlocks(subset, blocks);
@@ -3686,7 +3775,7 @@
     const allBlocks = blocks.concat(breakers, mitigationBlocks);
     const fvgs = findFVGs(subset);
     const pools = findLiquidityPools(subset, swings);
-    const extSwings = findSwings(subset, 6);
+    const extSwings = findSwings(subset, style.extWindow);
     const extZigzag = buildZigzag(extSwings);
     renderChart(subset);
     renderOverlays(subset, allBlocks, events, fvgs, pools, zigzag, range, extZigzag);
